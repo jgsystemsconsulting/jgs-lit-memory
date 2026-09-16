@@ -298,3 +298,108 @@ def render_index(papers, edges, boundary, inbox_pending, generated_at):
                        ("GENERATED", generated_at)]:
         text = text.replace("__" + key + "__", str(value))
     return text
+
+
+# ---------------------------------------------------------------------------
+# OpenAlex network layer (the only code that touches the network)
+# ---------------------------------------------------------------------------
+
+BASE_URL = "https://api.openalex.org"
+TIMEOUT = 30
+MAX_ATTEMPTS = 5
+BACKOFF_SCHEDULE = (1, 2, 4, 8, 16)
+UA = "lit_fetch/1.0 (jgs-lit-memory)"
+SELECT_FIELDS = ("id,doi,display_name,publication_date,publication_year,"
+                 "authorships,referenced_works,cited_by_count,topics,"
+                 "open_access,primary_location,abstract_inverted_index")
+
+
+class BudgetExhausted(Exception):
+    """X-RateLimit-Remaining read 0: abort the run, keep completed writes."""
+
+
+class BackoffExhausted(Exception):
+    """A call kept failing through the full backoff schedule."""
+
+
+def _retry_delay(headers, attempt_index):
+    """Retry-After (seconds) when the response carries one, else the schedule."""
+    if headers is not None:
+        try:
+            ra = headers.get("Retry-After")
+        except AttributeError:
+            ra = None
+        if ra:
+            try:
+                return float(ra)
+            except ValueError:
+                pass
+    return BACKOFF_SCHEDULE[min(attempt_index, len(BACKOFF_SCHEDULE) - 1)]
+
+
+def http_get(url, timeout=TIMEOUT):
+    """GET a URL. Returns (status, headers, body_text).
+
+    Retries 429 and 5xx on the backoff schedule; Retry-After overrides.
+    A successful response with x-ratelimit-remaining == 0 raises
+    BudgetExhausted. urllib follows 301 merge redirects itself; the record
+    body returned is already the canonical work.
+    """
+    for attempt in range(MAX_ATTEMPTS):
+        req = urllib.request.Request(url, headers={"User-Agent": UA})
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                body = resp.read().decode("utf-8")
+                headers = {k.lower(): v for k, v in resp.headers.items()}
+                if headers.get("x-ratelimit-remaining") == "0":
+                    raise BudgetExhausted(url)
+                return resp.status, headers, body
+        except BudgetExhausted:
+            raise
+        except urllib.error.HTTPError as e:
+            if not (e.code == 429 or 500 <= e.code < 600):
+                raise
+            headers = e.headers
+        # failed attempt: sleep the schedule (Retry-After overrides), then retry
+        time.sleep(_retry_delay(headers, attempt))
+    raise BackoffExhausted(url)
+
+
+def with_params(path, params, api_key):
+    """Build an API URL. api_key appended when present; no mailto, ever."""
+    if api_key:
+        params = dict(params, api_key=api_key)
+    return BASE_URL + path + "?" + urllib.parse.urlencode(params)
+
+
+def work_url(identifier, api_key):
+    """Singleton work URL: /works/doi:<doi> or /works/<W-id> (free)."""
+    return with_params("/works/" + urllib.parse.quote(identifier, safe=":/"),
+                       {"select": SELECT_FIELDS}, api_key)
+
+
+def ids_filter_url(wids, api_key):
+    """Batch list URL: pipe-OR filter, per-page=100 (budgeted)."""
+    return with_params("/works",
+                       {"filter": "ids.openalex:" + "|".join(wids),
+                        "per-page": str(PAGE_SIZE),
+                        "select": SELECT_FIELDS}, api_key)
+
+
+def search_url(title, api_key):
+    """Verified title search URL (budgeted)."""
+    return with_params("/works", {"search": title, "per-page": "5",
+                                  "select": SELECT_FIELDS}, api_key)
+
+
+def parse_envelope(body):
+    """results list from a list/filter/search envelope {"meta": ..., "results": [...]}."""
+    return json.loads(body).get("results", [])
+
+
+def warn_keyless(call_type, api_key):
+    """One warning line before any budgeted call when no key is configured."""
+    if not api_key:
+        print("warning: {0} without OPENALEX_API_KEY; the keyless budget is "
+              "$0.10/day and this call is budgeted".format(call_type),
+              file=sys.stderr)

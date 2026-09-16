@@ -5,10 +5,14 @@ Network calls never leave the test process: every test that reaches the
 network installs a fake via lit_fetch.http_get (see Task 3).
 """
 
+import io
 import json
 import sys
+import urllib.parse
 
 import lit_fetch
+
+lit_fetch.time.sleep = lambda seconds: None
 
 # ---------------------------------------------------------------------------
 # frozen fixtures
@@ -221,6 +225,148 @@ def test_render_index():
     assert "__" not in text
 
 
+# ---------------------------------------------------------------------------
+# fakes: the network seam
+# ---------------------------------------------------------------------------
+
+def fake_http(handler):
+    """Wrap a handler(url) -> (status, headers, body) as a fake lit_fetch.http_get."""
+    calls = []
+
+    def get(url, timeout=30):
+        calls.append(url)
+        return handler(url)
+
+    get.calls = calls
+    return get
+
+
+def envelope(records):
+    return json.dumps({"meta": {"count": len(records)}, "results": records})
+
+
+def fake_urlopen(handler):
+    """Patch urllib.request.urlopen UNDER the real lit_fetch.http_get, for
+    tests that exercise retry/backoff/BudgetExhausted logic itself. handler(url)
+    returns (status, headers, body_text) or raises. Returns the seen URLs."""
+    calls = []
+
+    class FakeResp:
+        def __init__(self, status, headers, body):
+            self.status = status
+            self.headers = dict(headers)
+            self._body = body
+
+        def read(self):
+            return self._body.encode("utf-8")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def urlopen(req, timeout=30):
+        url = req.full_url
+        calls.append(url)
+        result = handler(url)
+        if isinstance(result, Exception):
+            raise result
+        return FakeResp(*result)
+
+    lit_fetch.urllib.request.urlopen = urlopen
+    return calls
+
+
+# ---------------------------------------------------------------------------
+# checks: network layer (all offline through the fake)
+# ---------------------------------------------------------------------------
+
+def test_url_builders():
+    u = lit_fetch.work_url("doi:10.1038/nature12373", "KEY")
+    assert u.startswith("https://api.openalex.org/works/doi:10.1038/nature12373?")
+    assert "select=" in u and "api_key=KEY" in u
+    u2 = lit_fetch.work_url("W1111111111", None)
+    q2 = urllib.parse.parse_qs(urllib.parse.urlparse(u2).query)
+    assert q2["select"] == [lit_fetch.SELECT_FIELDS]
+    assert "api_key" not in u2 and "mailto" not in u2
+    u3 = lit_fetch.ids_filter_url(["W1", "W2"], None)
+    q = urllib.parse.parse_qs(urllib.parse.urlparse(u3).query)
+    assert q["filter"] == ["ids.openalex:W1|W2"]
+    assert q["per-page"] == ["100"]
+    u4 = lit_fetch.search_url("Graphs and Edges", None)
+    q = urllib.parse.parse_qs(urllib.parse.urlparse(u4).query)
+    assert q["search"] == ["Graphs and Edges"]
+    assert q["per-page"] == ["5"]
+
+
+def test_parse_envelope():
+    assert lit_fetch.parse_envelope('{"meta": {"count": 2}, "results": [1, 2]}') == [1, 2]
+    assert lit_fetch.parse_envelope('{"meta": {}}') == []
+
+
+def test_retry_then_success():
+    attempts = []
+
+    def handler(url):
+        attempts.append(url)
+        if len(attempts) == 1:
+            raise lit_fetch.urllib.error.HTTPError(
+                url, 503, "oops", {}, io.BytesIO(b""))
+        return (200, {"x-ratelimit-remaining": "9999"}, "{}")
+
+    fake_urlopen(handler)
+    status, headers, body = lit_fetch.http_get("https://api.openalex.org/works/W1")
+    assert status == 200
+    assert len(attempts) == 2
+
+
+def test_retry_after_overrides_schedule():
+    slept = []
+
+    def handler(url):
+        if len(handler.calls) == 0:
+            handler.calls.append(url)
+            raise lit_fetch.urllib.error.HTTPError(
+                url, 429, "slow down", {"Retry-After": "7"}, io.BytesIO(b""))
+        return (200, {"x-ratelimit-remaining": "99"}, "{}")
+
+    handler.calls = []
+    lit_fetch.time.sleep = slept.append
+    fake_urlopen(handler)
+    lit_fetch.http_get("https://api.openalex.org/works/W1")
+    assert slept == [7.0]
+    lit_fetch.time.sleep = lambda seconds: None
+
+
+def test_budget_exhausted():
+    def handler(url):
+        return (200, {"x-ratelimit-remaining": "0"}, "{}")
+
+    fake_urlopen(handler)
+    try:
+        lit_fetch.http_get("https://api.openalex.org/works/W1")
+        raise AssertionError("expected BudgetExhausted")
+    except lit_fetch.BudgetExhausted:
+        pass
+
+
+def test_http_404_propagates():
+    calls = []
+
+    def handler(url):
+        calls.append(url)
+        raise lit_fetch.urllib.error.HTTPError(url, 404, "nope", {}, io.BytesIO(b""))
+
+    fake_urlopen(handler)
+    try:
+        lit_fetch.http_get("https://api.openalex.org/works/W1")
+        raise AssertionError("expected HTTPError")
+    except lit_fetch.urllib.error.HTTPError as e:
+        assert e.code == 404
+    assert len(calls) == 1
+
+
 CHECKS = [
     test_fold,
     test_bare_ids,
@@ -233,6 +379,12 @@ CHECKS = [
     test_union_edges,
     test_remap_edges,
     test_render_index,
+    test_url_builders,
+    test_parse_envelope,
+    test_retry_then_success,
+    test_retry_after_overrides_schedule,
+    test_budget_exhausted,
+    test_http_404_propagates,
 ]
 
 
