@@ -494,6 +494,152 @@ def test_title_verb_verification_gate():
         assert (lit / "papers" / "W1111111111.json").exists()
 
 
+# ---------------------------------------------------------------------------
+# checks: batch and inbox verbs (offline through the fake)
+# ---------------------------------------------------------------------------
+
+def test_batch_two_chunks_and_keyless_warning():
+    with tempfile.TemporaryDirectory() as tmp:
+        lit = pathlib.Path(tmp) / ".lit"
+        ids = ["W%d" % (9000000000 + i) for i in range(1, 151)]
+        calls = []
+
+        def handler(url):
+            calls.append(url)
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
+            wids = q["filter"][0].split(":")[1].split("|")
+            return (200, {"x-ratelimit-remaining": "9999"},
+                    envelope([make_payload(w) for w in wids]))
+
+        lit_fetch.http_get = fake_http(handler)
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+            run = lit_fetch.Run()
+            lit_fetch.verb_ids("|".join(ids), lit, None, False, run)
+        assert len(calls) == 2                       # 100 + 50
+        assert run.written == 150 and run.skipped == 0 and run.failed == 0
+        assert "keyless" in err.getvalue()           # warning before the budgeted call
+        assert len(list((lit / "papers").glob("*.json"))) == 150
+        assert "last-synced: " in (lit / "SKILL.md").read_text(encoding="utf-8")
+
+
+def test_batch_skips_and_reports_absent():
+    with tempfile.TemporaryDirectory() as tmp:
+        lit = pathlib.Path(tmp) / ".lit"
+        lit_fetch.ensure_corpus(lit)
+        lit_fetch.write_record(
+            lit_fetch.normalize_work(make_payload("W9000000001"), seed=True,
+                                     source="capture",
+                                     captured_at="2026-09-16T00:00:00Z"), lit)
+
+        def handler(url):
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
+            wids = q["filter"][0].split(":")[1].split("|")
+            return (200, {"x-ratelimit-remaining": "9"},
+                    envelope([make_payload(w) for w in wids if w != "W9000000002"]))
+
+        lit_fetch.http_get = fake_http(handler)
+        with contextlib.redirect_stdout(io.StringIO()):
+            run = lit_fetch.Run()
+            lit_fetch.verb_ids("W9000000001|W9000000002|W9000000003",
+                               lit, None, False, run)
+        assert run.skipped == 1            # W9000000001 already in corpus, never fetched
+        assert run.written == 1            # W9000000003
+        assert run.failed == 1             # W9000000002 absent from response
+        assert "404" in run.failures[0][1]
+
+
+def test_budget_abort_keeps_completed_writes():
+    with tempfile.TemporaryDirectory() as tmp:
+        lit = pathlib.Path(tmp) / ".lit"
+        ids = ["W%d" % (9100000000 + i) for i in range(1, 151)]
+
+        def handler(url):
+            if "W9100000101" in url:       # second chunk
+                return (200, {"x-ratelimit-remaining": "0"}, "{}")
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
+            wids = q["filter"][0].split(":")[1].split("|")
+            return (200, {"x-ratelimit-remaining": "500"},
+                    envelope([make_payload(w) for w in wids]))
+
+        fake_urlopen(handler)
+        with contextlib.redirect_stdout(io.StringIO()):
+            run = lit_fetch.Run()
+            try:
+                lit_fetch.verb_ids("|".join(ids), lit, None, False, run)
+                raise AssertionError("expected BudgetExhausted")
+            except lit_fetch.BudgetExhausted:
+                pass
+        assert run.written == 100
+        assert len(list((lit / "papers").glob("*.json"))) == 100
+        # every completed paper is valid JSON: atomic writes, no half files
+        for p in (lit / "papers").glob("*.json"):
+            json.loads(p.read_text(encoding="utf-8"))
+        assert "last-synced: " in (lit / "SKILL.md").read_text(encoding="utf-8")
+
+
+def test_inbox_triage_flow():
+    with tempfile.TemporaryDirectory() as tmp:
+        lit = pathlib.Path(tmp) / ".lit"
+        lit_fetch.ensure_corpus(lit)
+        lines = [
+            {"ref": "W1111111111", "title": "", "note": "seed paper",
+             "added_at": "2026-09-16T10:00:00Z"},
+            {"ref": "doi:10.1234/Sample.2021", "note": "dup of seed by doi",
+             "added_at": "2026-09-16T10:01:00Z"},
+            {"ref": "not a ref", "note": "malformed",
+             "added_at": "2026-09-16T10:02:00Z"},
+            {"ref": "title:A Brand New Paper", "title": "A Brand New Paper",
+             "author": "Newman", "year": "2024", "note": "to resolve",
+             "added_at": "2026-09-16T10:03:00Z"},
+        ]
+        (lit / "inbox.jsonl").write_text(
+            "".join(json.dumps(e) + "\n" for e in lines), encoding="utf-8")
+
+        def handler(url):
+            if "search=" in url:
+                cand = make_payload("W4444444444")
+                cand["display_name"] = "A Brand New Paper"
+                cand["publication_year"] = 2024
+                cand["authorships"] = [{"author": {"display_name": "Al Newman"}}]
+                return (200, {"x-ratelimit-remaining": "9999"}, envelope([cand]))
+            return (200, {"x-ratelimit-remaining": "9999"},
+                    json.dumps(SAMPLE_PAYLOAD))
+
+        lit_fetch.http_get = fake_http(handler)
+        with contextlib.redirect_stdout(io.StringIO()):
+            run = lit_fetch.Run()
+            lit_fetch.verb_inbox(lit, None, run)
+        assert run.written == 2         # wid singleton + verified title search
+        assert run.skipped == 1         # doi entry resolves to the existing canonical
+        assert run.failed == 1          # unparseable ref stays queued
+        remaining = [json.loads(l)
+                     for l in (lit / "inbox.jsonl").read_text(encoding="utf-8").splitlines()
+                     if l.strip()]
+        assert len(remaining) == 1 and remaining[0]["ref"] == "not a ref"
+        assert "last_error" in remaining[0]
+        assert (lit / "papers" / "W1111111111.json").exists()
+        assert (lit / "papers" / "W4444444444.json").exists()
+        # re-run: nothing left to promote, malformed entry still queued
+        with contextlib.redirect_stdout(io.StringIO()):
+            run2 = lit_fetch.Run()
+            lit_fetch.verb_inbox(lit, None, run2)
+        assert run2.written == 0 and run2.failed == 1
+        # a later duplicate of a promoted paper dedupes against the corpus
+        extra = {"ref": "title:A Sample Study of Graphs and Edges",
+                 "title": "A Sample Study of Graphs and Edges",
+                 "note": "dup by title", "added_at": "2026-09-16T11:00:00Z"}
+        with (lit / "inbox.jsonl").open("a", encoding="utf-8") as f:
+            f.write(json.dumps(extra) + "\n")
+        with contextlib.redirect_stdout(io.StringIO()):
+            run3 = lit_fetch.Run()
+            lit_fetch.verb_inbox(lit, None, run3)
+        assert run3.skipped == 1 and run3.written == 0 and run3.failed == 1
+        lines_left = [l for l in (lit / "inbox.jsonl").read_text(encoding="utf-8").splitlines()
+                      if l.strip()]
+        assert len(lines_left) == 1     # only the malformed entry remains
+
+
 CHECKS = [
     test_fold,
     test_bare_ids,
@@ -518,6 +664,10 @@ CHECKS = [
     test_retry_after_overrides_schedule,
     test_budget_exhausted,
     test_http_404_propagates,
+    test_batch_two_chunks_and_keyless_warning,
+    test_batch_skips_and_reports_absent,
+    test_budget_abort_keeps_completed_writes,
+    test_inbox_triage_flow,
 ]
 
 

@@ -590,6 +590,134 @@ def verb_title(title, author, year, lit_dir, api_key, run):
     return True
 
 
+def parse_ids(raw):
+    """Split a pipe-separated id string, normalize, dedupe, preserve order."""
+    out, seen = [], set()
+    for part in str(raw).split("|"):
+        w = bare_wid(part)
+        if w and w not in seen:
+            seen.add(w)
+            out.append(w)
+    return out
+
+
+def verb_ids(raw_ids, lit_dir, api_key, seed_flag, run):
+    """Batch fetch by W-id. Skips ids already in the corpus before chunking,
+    warns keyless before the budgeted call, writes seed=false source="fetch"
+    records (seed_flag overrides), unions edges once per chunk, and reports
+    ids absent from a response as 404 failures."""
+    ensure_corpus(lit_dir)
+    ids = parse_ids(raw_ids)
+    if not ids:
+        print("error: --ids needs at least one W-id", file=sys.stderr)
+        sys.exit(2)
+    papers_dir = Path(lit_dir) / "papers"
+    todo = [w for w in ids if not (papers_dir / (w + ".json")).exists()]
+    run.skipped += len(ids) - len(todo)
+    if not todo:
+        return
+    warn_keyless("batch --ids", api_key)
+    aliases = load_aliases(lit_dir)
+    try:
+        for chunk in chunk_ids(todo):
+            status, headers, body = http_get(ids_filter_url(chunk, api_key))
+            by_id = {bare_wid(r["id"]): r for r in parse_envelope(body)}
+            records = []
+            for wid in chunk:
+                payload = by_id.get(wid) or by_id.get(resolve_alias(wid, aliases))
+                if payload is None:
+                    run.fail(wid, "404; requested id absent from response")
+                    continue
+                canonical = bare_wid(payload["id"])
+                if canonical != wid and wid not in aliases:
+                    aliases[wid] = canonical
+                    save_aliases(lit_dir, aliases)
+                    print("merge: {0} -> {1}".format(wid, canonical))
+                record, wrote = write_one(payload, lit_dir, run,
+                                          seed=seed_flag, source="fetch")
+                records.append(record)
+            write_edges(lit_dir, edges_of(records))
+    except BudgetExhausted:
+        if run.written:
+            regenerate_index(lit_dir)
+        raise
+    if run.written:
+        regenerate_index(lit_dir)
+
+
+def read_inbox(lit_dir):
+    """Read inbox entries as dicts, skipping blank lines. Attaches the parsed
+    ref as the internal "_ref" key (None when unparseable)."""
+    p = Path(lit_dir) / "inbox.jsonl"
+    if not p.exists():
+        return []
+    entries = []
+    for line in p.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        entry = json.loads(line)
+        entry["_ref"] = parse_ref(entry.get("ref"))
+        entries.append(entry)
+    return entries
+
+
+def resolve_entry(entry, kind, value, lit_dir, api_key, run):
+    """Promote one inbox entry. Returns True on success, False on a
+    verification failure (already reported by verb_title); raises on hard
+    errors (404, network, budget)."""
+    if kind == "doi":
+        capture_identifier("doi:" + bare_doi(value), False, lit_dir, api_key, run)
+        return True
+    if kind == "wid":
+        capture_identifier(value, True, lit_dir, api_key, run)
+        return True
+    title = entry.get("title") or (value if kind == "title" else None)
+    if not title:
+        raise ValueError("no title available to search")
+    return verb_title(title, entry.get("author"), entry.get("year"),
+                      lit_dir, api_key, run)
+
+
+def verb_inbox(lit_dir, api_key, run):
+    """Triage the inbox: dedupe, resolve every entry, then rewrite the inbox
+    exactly once, atomically, keeping only entries that remain. Failures stay
+    queued with their reason in "last_error". A BudgetExhausted abort
+    re-raises before the rewrite, leaving the original queue file intact, and
+    re-runs are idempotent through skip-if-exists."""
+    entries = read_inbox(lit_dir)
+    parseable = [e for e in entries if e["_ref"]]
+    malformed = [e for e in entries if not e["_ref"]]
+    for e in malformed:
+        e.pop("_ref", None)
+        run.fail(e.get("ref", "?"), "unparseable ref")
+        e["last_error"] = "unparseable ref"
+    papers_dir = Path(lit_dir) / "papers"
+    known = corpus_keys(papers_dir) if papers_dir.is_dir() else set()
+    kept, duplicates = dedupe_inbox(parseable, known)
+    run.skipped += len(duplicates)
+    if any(e["_ref"][0] in ("title", "arxiv") for e in kept):
+        warn_keyless("inbox title/arxiv search", api_key)
+    remaining = list(malformed)
+    for entry in kept:
+        kind, value = entry.pop("_ref")
+        try:
+            ok = resolve_entry(entry, kind, value, lit_dir, api_key, run)
+            if not ok:
+                entry["last_error"] = "verification failed"
+                remaining.append(entry)
+        except BudgetExhausted:
+            raise
+        except Exception as exc:
+            reason = str(exc) or exc.__class__.__name__
+            entry["last_error"] = reason
+            run.fail(entry.get("ref", "?"), reason)
+            remaining.append(entry)
+    atomic_write(Path(lit_dir) / "inbox.jsonl",
+                 "".join(json.dumps(e, ensure_ascii=False) + "\n" for e in remaining))
+    if run.written:
+        regenerate_index(lit_dir)
+
+
 VERB_FLAGS = ("doi", "openalex", "arxiv", "title", "ids", "inbox", "status", "check")
 
 
