@@ -389,11 +389,13 @@ def save_aliases(lit_dir, aliases):
 
 
 def write_edges(lit_dir, new_edges):
-    """Union new edges into edges.jsonl, healing as we go: existing endpoints
-    are remapped through the full alias table before the union, so stale
-    endpoints collapse onto canonical ones. Full idempotent rewrite, atomic."""
-    existing = remap_edges(load_edges(lit_dir), load_aliases(lit_dir))
-    combined = union_edges(existing, new_edges)
+    """Union new edges into edges.jsonl, healing as we go: existing and new
+    endpoints are both remapped through the full alias table before the union,
+    so stale endpoints collapse onto canonical ones. Full idempotent rewrite,
+    atomic."""
+    aliases = load_aliases(lit_dir)
+    existing = remap_edges(load_edges(lit_dir), aliases)
+    combined = union_edges(existing, remap_edges(new_edges, aliases))
     atomic_write(Path(lit_dir) / "graph" / "edges.jsonl",
                  "".join(json.dumps(e, ensure_ascii=False) + "\n" for e in combined))
     return len(combined)
@@ -469,9 +471,10 @@ def http_get(url, timeout=TIMEOUT):
     """GET a URL. Returns (status, headers, body_text).
 
     Retries 429 and 5xx on the backoff schedule; Retry-After overrides.
-    A successful response with x-ratelimit-remaining == 0 raises
-    BudgetExhausted. urllib follows 301 merge redirects itself; the record
-    body returned is already the canonical work.
+    Always returns the tuple once a 200 body is in hand, including when
+    x-ratelimit-remaining is 0: budget-abort is the caller's job (verb loops
+    stop before the next call). urllib follows 301 merge redirects itself;
+    the record body returned is already the canonical work.
     """
     for attempt in range(MAX_ATTEMPTS):
         req = urllib.request.Request(url, headers={"User-Agent": UA})
@@ -479,11 +482,7 @@ def http_get(url, timeout=TIMEOUT):
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 body = resp.read().decode("utf-8")
                 headers = {k.lower(): v for k, v in resp.headers.items()}
-                if headers.get("x-ratelimit-remaining") == "0":
-                    raise BudgetExhausted(url)
                 return resp.status, headers, body
-        except BudgetExhausted:
-            raise
         except urllib.error.HTTPError as e:
             if not (e.code == 429 or 500 <= e.code < 600):
                 raise
@@ -605,7 +604,10 @@ def verb_ids(raw_ids, lit_dir, api_key, seed_flag, run):
     """Batch fetch by W-id. Skips ids already in the corpus before chunking,
     warns keyless before the budgeted call, writes seed=false source="fetch"
     records (seed_flag overrides), unions edges once per chunk, and reports
-    ids absent from a response as 404 failures."""
+    ids absent from a response as 404 failures. When a response carries
+    x-ratelimit-remaining 0, remaining chunks are aborted with one budget
+    failure; completed writes stand. Index regenerates when the record set or
+    the edge set changed."""
     ensure_corpus(lit_dir)
     ids = parse_ids(raw_ids)
     if not ids:
@@ -618,30 +620,43 @@ def verb_ids(raw_ids, lit_dir, api_key, seed_flag, run):
         return
     warn_keyless("batch --ids", api_key)
     aliases = load_aliases(lit_dir)
-    try:
-        for chunk in chunk_ids(todo):
-            status, headers, body = http_get(ids_filter_url(chunk, api_key))
-            by_id = {bare_wid(r["id"]): r for r in parse_envelope(body)}
-            records = []
-            for wid in chunk:
-                payload = by_id.get(wid) or by_id.get(resolve_alias(wid, aliases))
-                if payload is None:
-                    run.fail(wid, "404; requested id absent from response")
-                    continue
-                canonical = bare_wid(payload["id"])
-                if canonical != wid and wid not in aliases:
-                    aliases[wid] = canonical
-                    save_aliases(lit_dir, aliases)
-                    print("merge: {0} -> {1}".format(wid, canonical))
-                record, wrote = write_one(payload, lit_dir, run,
-                                          seed=seed_flag, source="fetch")
-                records.append(record)
-            write_edges(lit_dir, edges_of(records))
-    except BudgetExhausted:
-        if run.written:
-            regenerate_index(lit_dir)
-        raise
-    if run.written:
+    edges_before = len(load_edges(lit_dir))
+    chunks = chunk_ids(todo)
+    for i, chunk in enumerate(chunks):
+        status, headers, body = http_get(ids_filter_url(chunk, api_key))
+        results = parse_envelope(body)
+        by_id = {bare_wid(r["id"]): r for r in results}
+        records = []
+        for wid in chunk:
+            payload = by_id.get(wid) or by_id.get(resolve_alias(wid, aliases))
+            if payload is None and len(chunk) == 1 and len(by_id) == 1:
+                # single-id filter returned exactly one different canonical:
+                # treat as a 301 merge (OpenAlex collapsed the requested id)
+                only = next(iter(by_id.values()))
+                if bare_wid(only["id"]) != wid:
+                    payload = only
+            if payload is None:
+                run.fail(wid, "404; requested id absent from response; "
+                         "use --openalex for merged ids")
+                continue
+            canonical = bare_wid(payload["id"])
+            if canonical != wid and wid not in aliases:
+                aliases[wid] = canonical
+                save_aliases(lit_dir, aliases)
+                print("merge: {0} -> {1}".format(wid, canonical))
+            record, wrote = write_one(payload, lit_dir, run,
+                                      seed=seed_flag, source="fetch")
+            records.append(record)
+        write_edges(lit_dir, edges_of(records))
+        if headers.get("x-ratelimit-remaining") == "0":
+            remaining = sum(len(c) for c in chunks[i + 1:])
+            if remaining:
+                run.fail("{0} remaining id(s)".format(remaining),
+                         "budget exhausted; re-run when the daily budget resets")
+                print("budget exhausted; completed writes stand")
+            break
+    edges_after = len(load_edges(lit_dir))
+    if run.written or edges_after != edges_before:
         regenerate_index(lit_dir)
 
 
@@ -866,9 +881,21 @@ def main(argv=None):
         elif verb == "arxiv":
             print("note: resolving by verified title search (arXiv id "
                   + args.arxiv + " is not an OpenAlex lookup key)")
-            verb_title(args.title, args.author, args.year, lit_dir, api_key, run)
+            try:
+                verb_title(args.title, args.author, args.year,
+                           lit_dir, api_key, run)
+            except BudgetExhausted:
+                raise
+            except Exception as exc:
+                run.fail(args.arxiv, str(exc) or exc.__class__.__name__)
         elif verb == "title":
-            verb_title(args.title, args.author, args.year, lit_dir, api_key, run)
+            try:
+                verb_title(args.title, args.author, args.year,
+                           lit_dir, api_key, run)
+            except BudgetExhausted:
+                raise
+            except Exception as exc:
+                run.fail(args.title, str(exc) or exc.__class__.__name__)
         elif verb == "ids":
             verb_ids(args.ids, lit_dir, api_key, args.seed, run)
         elif verb == "inbox":

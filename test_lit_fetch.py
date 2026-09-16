@@ -255,12 +255,13 @@ def test_edges_and_aliases_roundtrip():
             {"source": "W1", "target": "W2"},
             {"source": "W2", "target": "W3"},
         ]
-        # alias healing on write: stale endpoint remaps, union dedupes
-        lit_fetch.save_aliases(lit, {"W3": "W5"})
-        lit_fetch.write_edges(lit, [{"source": "W5", "target": "W1"}])
+        # alias healing on write: existing AND new endpoints remap, union dedupes
+        lit_fetch.save_aliases(lit, {"W3": "W5", "W9": "W1"})
+        lit_fetch.write_edges(lit, [{"source": "W5", "target": "W1"},
+                                    {"source": "W9", "target": "W2"}])  # W9 -> W1
         assert lit_fetch.load_edges(lit) == [
-            {"source": "W1", "target": "W2"},
-            {"source": "W2", "target": "W5"},
+            {"source": "W1", "target": "W2"},   # existing + new (W9,W2) remapped
+            {"source": "W2", "target": "W5"},   # existing W3 remapped
             {"source": "W5", "target": "W1"},
         ]
 
@@ -291,11 +292,21 @@ def test_run_summary():
 
 
 # ---------------------------------------------------------------------------
-# fakes: the network seam
+# fakes: the network seam (order-safe: always restore after the with-body)
 # ---------------------------------------------------------------------------
 
+def envelope(records):
+    return json.dumps({"meta": {"count": len(records)}, "results": records})
+
+
+REAL_HTTP_GET = lit_fetch.http_get
+REAL_URLOPEN = lit_fetch.urllib.request.urlopen
+
+
+@contextlib.contextmanager
 def fake_http(handler):
-    """Wrap a handler(url) -> (status, headers, body) as a fake lit_fetch.http_get."""
+    """Wrap a handler(url) -> (status, headers, body) as lit_fetch.http_get.
+    Restores the previous http_get on exit so checks stay order-safe."""
     calls = []
 
     def get(url, timeout=30):
@@ -303,21 +314,20 @@ def fake_http(handler):
         return handler(url)
 
     get.calls = calls
-    return get
+    prev = lit_fetch.http_get
+    lit_fetch.http_get = get
+    try:
+        yield get
+    finally:
+        lit_fetch.http_get = prev
 
 
-def envelope(records):
-    return json.dumps({"meta": {"count": len(records)}, "results": records})
-
-
-REAL_HTTP_GET = lit_fetch.http_get
-
-
+@contextlib.contextmanager
 def fake_urlopen(handler):
     """Patch urllib.request.urlopen UNDER the real lit_fetch.http_get, for
-    tests that exercise retry/backoff/BudgetExhausted logic itself. handler(url)
-    returns (status, headers, body_text) or raises. Returns the seen URLs."""
-    lit_fetch.http_get = REAL_HTTP_GET   # undo any fake_http replacement
+    tests that exercise retry/backoff logic itself. handler(url) returns
+    (status, headers, body_text) or raises. Restores http_get and urlopen
+    on exit. Yields the seen-URLs list."""
     calls = []
 
     class FakeResp:
@@ -343,8 +353,15 @@ def fake_urlopen(handler):
             raise result
         return FakeResp(*result)
 
+    prev_http = lit_fetch.http_get
+    prev_urlopen = lit_fetch.urllib.request.urlopen
+    lit_fetch.http_get = REAL_HTTP_GET
     lit_fetch.urllib.request.urlopen = urlopen
-    return calls
+    try:
+        yield calls
+    finally:
+        lit_fetch.http_get = prev_http
+        lit_fetch.urllib.request.urlopen = prev_urlopen
 
 
 # ---------------------------------------------------------------------------
@@ -384,8 +401,8 @@ def test_retry_then_success():
                 url, 503, "oops", {}, io.BytesIO(b""))
         return (200, {"x-ratelimit-remaining": "9999"}, "{}")
 
-    fake_urlopen(handler)
-    status, headers, body = lit_fetch.http_get("https://api.openalex.org/works/W1")
+    with fake_urlopen(handler):
+        status, headers, body = lit_fetch.http_get("https://api.openalex.org/works/W1")
     assert status == 200
     assert len(attempts) == 2
 
@@ -402,22 +419,25 @@ def test_retry_after_overrides_schedule():
 
     handler.calls = []
     lit_fetch.time.sleep = slept.append
-    fake_urlopen(handler)
-    lit_fetch.http_get("https://api.openalex.org/works/W1")
-    assert slept == [7.0]
-    lit_fetch.time.sleep = lambda seconds: None
+    try:
+        with fake_urlopen(handler):
+            lit_fetch.http_get("https://api.openalex.org/works/W1")
+        assert slept == [7.0]
+    finally:
+        lit_fetch.time.sleep = lambda seconds: None
 
 
 def test_budget_exhausted():
+    """http_get never raises on remaining=0: returns the 200 tuple so the
+    caller can finish the current chunk and stop before the next call."""
     def handler(url):
-        return (200, {"x-ratelimit-remaining": "0"}, "{}")
+        return (200, {"x-ratelimit-remaining": "0"}, '{"ok": true}')
 
-    fake_urlopen(handler)
-    try:
-        lit_fetch.http_get("https://api.openalex.org/works/W1")
-        raise AssertionError("expected BudgetExhausted")
-    except lit_fetch.BudgetExhausted:
-        pass
+    with fake_urlopen(handler):
+        status, headers, body = lit_fetch.http_get("https://api.openalex.org/works/W1")
+    assert status == 200
+    assert headers.get("x-ratelimit-remaining") == "0"
+    assert body == '{"ok": true}'
 
 
 def test_http_404_propagates():
@@ -427,12 +447,12 @@ def test_http_404_propagates():
         calls.append(url)
         raise lit_fetch.urllib.error.HTTPError(url, 404, "nope", {}, io.BytesIO(b""))
 
-    fake_urlopen(handler)
-    try:
-        lit_fetch.http_get("https://api.openalex.org/works/W1")
-        raise AssertionError("expected HTTPError")
-    except lit_fetch.urllib.error.HTTPError as e:
-        assert e.code == 404
+    with fake_urlopen(handler):
+        try:
+            lit_fetch.http_get("https://api.openalex.org/works/W1")
+            raise AssertionError("expected HTTPError")
+        except lit_fetch.urllib.error.HTTPError as e:
+            assert e.code == 404
     assert len(calls) == 1
 
 
@@ -449,22 +469,22 @@ def test_singleton_capture_and_alias():
             return (200, {"x-ratelimit-remaining": "9999"},
                     json.dumps(SAMPLE_PAYLOAD))   # canonical id W1111111111
 
-        lit_fetch.http_get = fake_http(handler)
-        out = io.StringIO()
-        with contextlib.redirect_stdout(out):
-            run = lit_fetch.Run()
-            lit_fetch.capture_identifier("W9999999999", True, lit, None, run)
-        assert run.written == 1 and run.skipped == 0 and run.failed == 0
-        assert "merge: W9999999999 -> W1111111111" in out.getvalue()
-        assert (lit / "papers" / "W1111111111.json").exists()
-        assert lit_fetch.load_aliases(lit) == {"W9999999999": "W1111111111"}
-        assert lit_fetch.load_edges(lit)[0]["source"] == "W1111111111"
-        assert "last-synced: " in (lit / "SKILL.md").read_text(encoding="utf-8")
-        # re-run: skip-if-exists, no rewrite, still counted
-        run2 = lit_fetch.Run()
-        with contextlib.redirect_stdout(io.StringIO()):
-            lit_fetch.capture_identifier("W9999999999", True, lit, None, run2)
-        assert run2.skipped == 1 and run2.written == 0 and run2.failed == 0
+        with fake_http(handler):
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                run = lit_fetch.Run()
+                lit_fetch.capture_identifier("W9999999999", True, lit, None, run)
+            assert run.written == 1 and run.skipped == 0 and run.failed == 0
+            assert "merge: W9999999999 -> W1111111111" in out.getvalue()
+            assert (lit / "papers" / "W1111111111.json").exists()
+            assert lit_fetch.load_aliases(lit) == {"W9999999999": "W1111111111"}
+            assert lit_fetch.load_edges(lit)[0]["source"] == "W1111111111"
+            assert "last-synced: " in (lit / "SKILL.md").read_text(encoding="utf-8")
+            # re-run: skip-if-exists, no rewrite, still counted
+            run2 = lit_fetch.Run()
+            with contextlib.redirect_stdout(io.StringIO()):
+                lit_fetch.capture_identifier("W9999999999", True, lit, None, run2)
+            assert run2.skipped == 1 and run2.written == 0 and run2.failed == 0
 
 
 def test_title_verb_verification_gate():
@@ -475,23 +495,23 @@ def test_title_verb_verification_gate():
             assert "search=" in url and "per-page=5" in url
             return (200, {"x-ratelimit-remaining": "9999"}, envelope(CANDIDATES))
 
-        lit_fetch.http_get = fake_http(handler)
-        out = io.StringIO()
-        with contextlib.redirect_stdout(out):
-            run = lit_fetch.Run()
-            wrote = lit_fetch.verb_title("A Sample Study of Graphs and Edges",
-                                         None, None, lit, None, run)
-        assert wrote is False
-        assert run.written == 0 and run.failed == 1
-        assert "top candidates" in out.getvalue()
-        assert not (lit / "papers" / "W1111111111.json").exists()
-        # surname disambiguates: writes one record
-        run2 = lit_fetch.Run()
-        with contextlib.redirect_stdout(io.StringIO()):
-            wrote = lit_fetch.verb_title("A Sample Study of Graphs and Edges",
-                                         "Doe", None, lit, None, run2)
-        assert wrote is True and run2.written == 1
-        assert (lit / "papers" / "W1111111111.json").exists()
+        with fake_http(handler):
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                run = lit_fetch.Run()
+                wrote = lit_fetch.verb_title("A Sample Study of Graphs and Edges",
+                                             None, None, lit, None, run)
+            assert wrote is False
+            assert run.written == 0 and run.failed == 1
+            assert "top candidates" in out.getvalue()
+            assert not (lit / "papers" / "W1111111111.json").exists()
+            # surname disambiguates: writes one record
+            run2 = lit_fetch.Run()
+            with contextlib.redirect_stdout(io.StringIO()):
+                wrote = lit_fetch.verb_title("A Sample Study of Graphs and Edges",
+                                             "Doe", None, lit, None, run2)
+            assert wrote is True and run2.written == 1
+            assert (lit / "papers" / "W1111111111.json").exists()
 
 
 # ---------------------------------------------------------------------------
@@ -511,11 +531,11 @@ def test_batch_two_chunks_and_keyless_warning():
             return (200, {"x-ratelimit-remaining": "9999"},
                     envelope([make_payload(w) for w in wids]))
 
-        lit_fetch.http_get = fake_http(handler)
         err = io.StringIO()
-        with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
-            run = lit_fetch.Run()
-            lit_fetch.verb_ids("|".join(ids), lit, None, False, run)
+        with fake_http(handler):
+            with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+                run = lit_fetch.Run()
+                lit_fetch.verb_ids("|".join(ids), lit, None, False, run)
         assert len(calls) == 2                       # 100 + 50
         assert run.written == 150 and run.skipped == 0 and run.failed == 0
         assert "keyless" in err.getvalue()           # warning before the budgeted call
@@ -538,41 +558,70 @@ def test_batch_skips_and_reports_absent():
             return (200, {"x-ratelimit-remaining": "9"},
                     envelope([make_payload(w) for w in wids if w != "W9000000002"]))
 
-        lit_fetch.http_get = fake_http(handler)
-        with contextlib.redirect_stdout(io.StringIO()):
-            run = lit_fetch.Run()
-            lit_fetch.verb_ids("W9000000001|W9000000002|W9000000003",
-                               lit, None, False, run)
+        with fake_http(handler):
+            with contextlib.redirect_stdout(io.StringIO()):
+                run = lit_fetch.Run()
+                lit_fetch.verb_ids("W9000000001|W9000000002|W9000000003",
+                                   lit, None, False, run)
         assert run.skipped == 1            # W9000000001 already in corpus, never fetched
         assert run.written == 1            # W9000000003
         assert run.failed == 1             # W9000000002 absent from response
         assert "404" in run.failures[0][1]
+        assert "use --openalex" in run.failures[0][1]
+
+
+def test_batch_single_id_merge():
+    """R3b: single-id chunk whose response has exactly one different canonical
+    is treated as a 301 merge (alias + write under the canonical id)."""
+    with tempfile.TemporaryDirectory() as tmp:
+        lit = pathlib.Path(tmp) / ".lit"
+
+        def handler(url):
+            # filter asked for W9999999999; OpenAlex returns the merged canonical
+            return (200, {"x-ratelimit-remaining": "9"},
+                    envelope([SAMPLE_PAYLOAD]))   # id W1111111111
+
+        out = io.StringIO()
+        with fake_http(handler):
+            with contextlib.redirect_stdout(out):
+                run = lit_fetch.Run()
+                lit_fetch.verb_ids("W9999999999", lit, None, False, run)
+        assert run.written == 1 and run.failed == 0
+        assert "merge: W9999999999 -> W1111111111" in out.getvalue()
+        assert lit_fetch.load_aliases(lit) == {"W9999999999": "W1111111111"}
+        assert (lit / "papers" / "W1111111111.json").exists()
+        assert not (lit / "papers" / "W9999999999.json").exists()
+        assert "last-synced: " in (lit / "SKILL.md").read_text(encoding="utf-8")
 
 
 def test_budget_abort_keeps_completed_writes():
+    """Chunk 1 processes (100 written); remaining 0 seen; chunk 2 never called;
+    run gains one budget failure; all files valid JSON; index regenerated."""
     with tempfile.TemporaryDirectory() as tmp:
         lit = pathlib.Path(tmp) / ".lit"
         ids = ["W%d" % (9100000000 + i) for i in range(1, 151)]
+        calls = []
 
         def handler(url):
-            if "W9100000101" in url:       # second chunk
-                return (200, {"x-ratelimit-remaining": "0"}, "{}")
+            calls.append(url)
             q = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
             wids = q["filter"][0].split(":")[1].split("|")
-            return (200, {"x-ratelimit-remaining": "500"},
+            # first (and only) chunk returns remaining 0 after a full body
+            return (200, {"x-ratelimit-remaining": "0"},
                     envelope([make_payload(w) for w in wids]))
 
-        fake_urlopen(handler)
-        with contextlib.redirect_stdout(io.StringIO()):
-            run = lit_fetch.Run()
-            try:
+        out = io.StringIO()
+        with fake_http(handler):
+            with contextlib.redirect_stdout(out):
+                run = lit_fetch.Run()
                 lit_fetch.verb_ids("|".join(ids), lit, None, False, run)
-                raise AssertionError("expected BudgetExhausted")
-            except lit_fetch.BudgetExhausted:
-                pass
+        assert len(calls) == 1                 # chunk 2 never called
         assert run.written == 100
+        assert run.failed == 1
+        assert run.failures[0][0] == "50 remaining id(s)"
+        assert "budget exhausted" in run.failures[0][1]
+        assert "budget exhausted; completed writes stand" in out.getvalue()
         assert len(list((lit / "papers").glob("*.json"))) == 100
-        # every completed paper is valid JSON: atomic writes, no half files
         for p in (lit / "papers").glob("*.json"):
             json.loads(p.read_text(encoding="utf-8"))
         assert "last-synced: " in (lit / "SKILL.md").read_text(encoding="utf-8")
@@ -606,38 +655,38 @@ def test_inbox_triage_flow():
             return (200, {"x-ratelimit-remaining": "9999"},
                     json.dumps(SAMPLE_PAYLOAD))
 
-        lit_fetch.http_get = fake_http(handler)
-        with contextlib.redirect_stdout(io.StringIO()):
-            run = lit_fetch.Run()
-            lit_fetch.verb_inbox(lit, None, run)
-        assert run.written == 2         # wid singleton + verified title search
-        assert run.skipped == 1         # doi entry resolves to the existing canonical
-        assert run.failed == 1          # unparseable ref stays queued
-        remaining = [json.loads(l)
-                     for l in (lit / "inbox.jsonl").read_text(encoding="utf-8").splitlines()
-                     if l.strip()]
-        assert len(remaining) == 1 and remaining[0]["ref"] == "not a ref"
-        assert "last_error" in remaining[0]
-        assert (lit / "papers" / "W1111111111.json").exists()
-        assert (lit / "papers" / "W4444444444.json").exists()
-        # re-run: nothing left to promote, malformed entry still queued
-        with contextlib.redirect_stdout(io.StringIO()):
-            run2 = lit_fetch.Run()
-            lit_fetch.verb_inbox(lit, None, run2)
-        assert run2.written == 0 and run2.failed == 1
-        # a later duplicate of a promoted paper dedupes against the corpus
-        extra = {"ref": "title:A Sample Study of Graphs and Edges",
-                 "title": "A Sample Study of Graphs and Edges",
-                 "note": "dup by title", "added_at": "2026-09-16T11:00:00Z"}
-        with (lit / "inbox.jsonl").open("a", encoding="utf-8") as f:
-            f.write(json.dumps(extra) + "\n")
-        with contextlib.redirect_stdout(io.StringIO()):
-            run3 = lit_fetch.Run()
-            lit_fetch.verb_inbox(lit, None, run3)
-        assert run3.skipped == 1 and run3.written == 0 and run3.failed == 1
-        lines_left = [l for l in (lit / "inbox.jsonl").read_text(encoding="utf-8").splitlines()
-                      if l.strip()]
-        assert len(lines_left) == 1     # only the malformed entry remains
+        with fake_http(handler):
+            with contextlib.redirect_stdout(io.StringIO()):
+                run = lit_fetch.Run()
+                lit_fetch.verb_inbox(lit, None, run)
+            assert run.written == 2         # wid singleton + verified title search
+            assert run.skipped == 1         # doi entry resolves to the existing canonical
+            assert run.failed == 1          # unparseable ref stays queued
+            remaining = [json.loads(l)
+                         for l in (lit / "inbox.jsonl").read_text(encoding="utf-8").splitlines()
+                         if l.strip()]
+            assert len(remaining) == 1 and remaining[0]["ref"] == "not a ref"
+            assert "last_error" in remaining[0]
+            assert (lit / "papers" / "W1111111111.json").exists()
+            assert (lit / "papers" / "W4444444444.json").exists()
+            # re-run: nothing left to promote, malformed entry still queued
+            with contextlib.redirect_stdout(io.StringIO()):
+                run2 = lit_fetch.Run()
+                lit_fetch.verb_inbox(lit, None, run2)
+            assert run2.written == 0 and run2.failed == 1
+            # a later duplicate of a promoted paper dedupes against the corpus
+            extra = {"ref": "title:A Sample Study of Graphs and Edges",
+                     "title": "A Sample Study of Graphs and Edges",
+                     "note": "dup by title", "added_at": "2026-09-16T11:00:00Z"}
+            with (lit / "inbox.jsonl").open("a", encoding="utf-8") as f:
+                f.write(json.dumps(extra) + "\n")
+            with contextlib.redirect_stdout(io.StringIO()):
+                run3 = lit_fetch.Run()
+                lit_fetch.verb_inbox(lit, None, run3)
+            assert run3.skipped == 1 and run3.written == 0 and run3.failed == 1
+            lines_left = [l for l in (lit / "inbox.jsonl").read_text(encoding="utf-8").splitlines()
+                          if l.strip()]
+            assert len(lines_left) == 1     # only the malformed entry remains
 
 
 # ---------------------------------------------------------------------------
@@ -678,10 +727,10 @@ def test_check_forms_fake():
                     json.dumps(make_payload("W2741809807")))
         return (200, {"x-ratelimit-remaining": "9"}, json.dumps(SAMPLE_PAYLOAD))
 
-    lit_fetch.http_get = fake_http(handler)
     out = io.StringIO()
-    with contextlib.redirect_stdout(out):
-        rc = lit_fetch.verb_check(None)
+    with fake_http(handler):
+        with contextlib.redirect_stdout(out):
+            rc = lit_fetch.verb_check(None)
     assert rc == 0
     assert out.getvalue().count("OK") == 4
     assert "FAIL" not in out.getvalue()
@@ -713,6 +762,7 @@ CHECKS = [
     test_http_404_propagates,
     test_batch_two_chunks_and_keyless_warning,
     test_batch_skips_and_reports_absent,
+    test_batch_single_id_merge,
     test_budget_abort_keeps_completed_writes,
     test_inbox_triage_flow,
     test_status_never_before_index,
