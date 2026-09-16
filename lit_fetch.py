@@ -718,6 +718,72 @@ def verb_inbox(lit_dir, api_key, run):
         regenerate_index(lit_dir)
 
 
+def verb_status(lit_dir):
+    """Corpus summary to stdout. Read-only; never regenerates the index.
+    last-synced reads the generated index's timestamp line and prints
+    "never" when no generated index exists yet."""
+    papers_dir = Path(lit_dir) / "papers"
+    papers = len(list(papers_dir.glob("*.json"))) if papers_dir.is_dir() else 0
+    edges = len(load_edges(lit_dir))
+    boundary = len(boundary_nodes(lit_dir))
+    pending = count_inbox(lit_dir)
+    last = "never"
+    index_path = Path(lit_dir) / "SKILL.md"
+    if index_path.exists():
+        m = re.search(r"^last-synced: (.+)$",
+                      index_path.read_text(encoding="utf-8"), re.M)
+        if m:
+            last = m.group(1).strip()
+    print("papers={0} edges={1} boundary={2} inbox_pending={3}".format(
+        papers, edges, boundary, pending))
+    print("last-synced: {0}".format(last))
+    return 0
+
+
+CHECK_DOI = "10.1038/nature12373"   # live-probed 2026-09-16 (plan Research section)
+CHECK_ID = "W2741809807"            # live-probed 2026-09-16 (plan Research section)
+
+
+def verb_check(api_key):
+    """Live smoke test of the four load-bearing endpoint forms. Exit 1 when
+    any form fails. Run on first use and whenever OpenAlex behaves oddly."""
+    ok = True
+    doi_result = {}
+
+    def probe(name, fn):
+        nonlocal ok
+        try:
+            fn()
+            print("OK   " + name)
+        except Exception as exc:
+            ok = False
+            print("FAIL {0}: {1}".format(name, exc))
+
+    def probe_doi():
+        payload = json.loads(http_get(work_url("doi:" + CHECK_DOI, api_key))[2])
+        doi_result["wid"] = bare_wid(payload["id"])
+
+    def probe_wid():
+        payload = json.loads(http_get(work_url(CHECK_ID, api_key))[2])
+        assert bare_wid(payload["id"]) == CHECK_ID
+
+    def probe_batch():
+        url = ids_filter_url([CHECK_ID, doi_result.get("wid", CHECK_ID)], api_key)
+        results = parse_envelope(http_get(url)[2])
+        assert isinstance(results, list)
+
+    def probe_search():
+        results = parse_envelope(http_get(
+            search_url("crystal structure prediction", api_key))[2])
+        assert isinstance(results, list)
+
+    probe("doi singleton   /works/doi:" + CHECK_DOI, probe_doi)
+    probe("W-id singleton  /works/" + CHECK_ID, probe_wid)
+    probe("two-ID batch filter", probe_batch)
+    probe("title search", probe_search)
+    return 0 if ok else 1
+
+
 VERB_FLAGS = ("doi", "openalex", "arxiv", "title", "ids", "inbox", "status", "check")
 
 

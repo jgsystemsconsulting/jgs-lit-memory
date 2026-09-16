@@ -640,6 +640,53 @@ def test_inbox_triage_flow():
         assert len(lines_left) == 1     # only the malformed entry remains
 
 
+# ---------------------------------------------------------------------------
+# checks: status and check verbs
+# ---------------------------------------------------------------------------
+
+def test_status_never_before_index():
+    with tempfile.TemporaryDirectory() as tmp:
+        lit = pathlib.Path(tmp) / ".lit"
+        rec = lit_fetch.normalize_work(SAMPLE_PAYLOAD, seed=True, source="capture",
+                                       captured_at="2026-09-16T00:00:00Z")
+        lit_fetch.write_record(rec, lit)
+        lit_fetch.write_edges(lit, lit_fetch.edges_of([rec]))
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            assert lit_fetch.verb_status(lit) == 0
+        text = out.getvalue()
+        assert "papers=1 edges=2 boundary=2 inbox_pending=0" in text
+        assert "last-synced: never" in text
+        # after a regeneration the real timestamp shows up
+        lit_fetch.regenerate_index(lit)
+        out2 = io.StringIO()
+        with contextlib.redirect_stdout(out2):
+            lit_fetch.verb_status(lit)
+        assert "last-synced: never" not in out2.getvalue()
+        assert "last-synced: 20" in out2.getvalue()   # a real ISO timestamp
+
+
+def test_check_forms_fake():
+    def handler(url):
+        if "search=" in url:
+            return (200, {"x-ratelimit-remaining": "9"}, envelope([]))
+        if "ids.openalex" in url:
+            return (200, {"x-ratelimit-remaining": "9"},
+                    envelope([make_payload("W2741809807")]))
+        if "/works/W2741809807?" in url:
+            return (200, {"x-ratelimit-remaining": "9"},
+                    json.dumps(make_payload("W2741809807")))
+        return (200, {"x-ratelimit-remaining": "9"}, json.dumps(SAMPLE_PAYLOAD))
+
+    lit_fetch.http_get = fake_http(handler)
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        rc = lit_fetch.verb_check(None)
+    assert rc == 0
+    assert out.getvalue().count("OK") == 4
+    assert "FAIL" not in out.getvalue()
+
+
 CHECKS = [
     test_fold,
     test_bare_ids,
@@ -668,6 +715,8 @@ CHECKS = [
     test_batch_skips_and_reports_absent,
     test_budget_abort_keeps_completed_writes,
     test_inbox_triage_flow,
+    test_status_never_before_index,
+    test_check_forms_fake,
 ]
 
 
