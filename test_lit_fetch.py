@@ -7,7 +7,9 @@ network installs a fake via lit_fetch.http_get (see Task 3).
 
 import io
 import json
+import pathlib
 import sys
+import tempfile
 import urllib.parse
 
 import lit_fetch
@@ -226,6 +228,68 @@ def test_render_index():
 
 
 # ---------------------------------------------------------------------------
+# checks: write model (offline, temp dirs)
+# ---------------------------------------------------------------------------
+
+def test_atomic_write_and_corpus_init():
+    with tempfile.TemporaryDirectory() as tmp:
+        lit = pathlib.Path(tmp) / ".lit"
+        lit_fetch.ensure_corpus(lit)
+        assert (lit / "papers").is_dir()
+        assert (lit / "graph").is_dir()
+        assert (lit / "findings").is_dir()
+        lit_fetch.atomic_write(lit / "graph" / "edges.jsonl", "x\n")
+        assert (lit / "graph" / "edges.jsonl").read_text(encoding="utf-8") == "x\n"
+        assert not list(lit.rglob("*.tmp"))
+
+
+def test_edges_and_aliases_roundtrip():
+    with tempfile.TemporaryDirectory() as tmp:
+        lit = pathlib.Path(tmp) / ".lit"
+        lit_fetch.ensure_corpus(lit)
+        lit_fetch.write_edges(lit, [{"source": "W1", "target": "W2"}])
+        lit_fetch.write_edges(lit, [{"source": "W1", "target": "W2"},
+                                    {"source": "W2", "target": "W3"}])
+        assert lit_fetch.load_edges(lit) == [
+            {"source": "W1", "target": "W2"},
+            {"source": "W2", "target": "W3"},
+        ]
+        # alias healing on write: stale endpoint remaps, union dedupes
+        lit_fetch.save_aliases(lit, {"W3": "W5"})
+        lit_fetch.write_edges(lit, [{"source": "W5", "target": "W1"}])
+        assert lit_fetch.load_edges(lit) == [
+            {"source": "W1", "target": "W2"},
+            {"source": "W2", "target": "W5"},
+            {"source": "W5", "target": "W1"},
+        ]
+
+
+def test_index_and_status_counts():
+    with tempfile.TemporaryDirectory() as tmp:
+        lit = pathlib.Path(tmp) / ".lit"
+        rec = lit_fetch.normalize_work(SAMPLE_PAYLOAD, seed=True, source="capture",
+                                       captured_at="2026-09-16T00:00:00Z")
+        lit_fetch.write_record(rec, lit)
+        lit_fetch.write_edges(lit, lit_fetch.edges_of([rec]))
+        lit_fetch.regenerate_index(lit)
+        index = (lit / "SKILL.md").read_text(encoding="utf-8")
+        assert "| 1 |" in index
+        assert "boundary" in index.lower()
+        assert "last-synced: " in index
+        assert lit_fetch.boundary_nodes(lit) == {"W2222222222", "W3333333333"}
+        assert lit_fetch.count_inbox(lit) == 0
+        (lit / "inbox.jsonl").write_text('{"ref": "W1"}\n{"ref": "W2"}\n',
+                                         encoding="utf-8")
+        assert lit_fetch.count_inbox(lit) == 2
+
+
+def test_run_summary():
+    run = lit_fetch.Run()
+    run.fail("W1", "404")
+    assert run.summary() == "written=0 skipped=0 failed=1\nfailed: W1 (404)"
+
+
+# ---------------------------------------------------------------------------
 # fakes: the network seam
 # ---------------------------------------------------------------------------
 
@@ -379,6 +443,10 @@ CHECKS = [
     test_union_edges,
     test_remap_edges,
     test_render_index,
+    test_atomic_write_and_corpus_init,
+    test_edges_and_aliases_roundtrip,
+    test_index_and_status_counts,
+    test_run_summary,
     test_url_builders,
     test_parse_envelope,
     test_retry_then_success,

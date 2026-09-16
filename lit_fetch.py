@@ -301,6 +301,134 @@ def render_index(papers, edges, boundary, inbox_pending, generated_at):
 
 
 # ---------------------------------------------------------------------------
+# corpus write model (atomic everywhere)
+# ---------------------------------------------------------------------------
+
+def atomic_write(path, text):
+    """Write text atomically: temp file in the same directory, then os.replace."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def ensure_corpus(lit_dir):
+    """Create the corpus directory tree on first use in a fresh --dir."""
+    for sub in ("papers", "graph", "findings"):
+        (Path(lit_dir) / sub).mkdir(parents=True, exist_ok=True)
+
+
+class Run:
+    """Accumulates the end-of-run summary block."""
+
+    def __init__(self):
+        self.written = 0
+        self.skipped = 0
+        self.failed = 0
+        self.failures = []
+
+    def fail(self, identifier, reason):
+        self.failed += 1
+        self.failures.append((identifier, reason))
+
+    def summary(self):
+        lines = ["written={0} skipped={1} failed={2}".format(
+            self.written, self.skipped, self.failed)]
+        lines += ["failed: {0} ({1})".format(i, r) for i, r in self.failures]
+        return "\n".join(lines)
+
+
+def write_record(record, lit_dir):
+    """Atomically write one normalized record. File name equals record id."""
+    atomic_write(Path(lit_dir) / "papers" / (record["id"] + ".json"),
+                 json.dumps(record, indent=2, ensure_ascii=False) + "\n")
+
+
+def write_one(payload, lit_dir, run, seed, source):
+    """Normalize and write one record with post-fetch skip-if-exists.
+
+    The canonical id is only knowable after the fetch, so the skip happens
+    here. An existing canonical record is never rewritten: its seed and
+    captured_at stay untouched, and the run counts it as skipped.
+    Returns (record, wrote)."""
+    record = normalize_work(payload, seed=seed, source=source)
+    path = Path(lit_dir) / "papers" / (record["id"] + ".json")
+    if path.exists():
+        run.skipped += 1
+        return record, False
+    write_record(record, lit_dir)
+    run.written += 1
+    return record, True
+
+
+def edges_of(records):
+    """Citation edges from normalized records: source cites target, bare W-ids."""
+    return [{"source": r["id"], "target": t}
+            for r in records for t in r["referenced_works"]]
+
+
+def load_edges(lit_dir):
+    p = Path(lit_dir) / "graph" / "edges.jsonl"
+    if not p.exists():
+        return []
+    return [json.loads(line) for line in p.read_text(encoding="utf-8").splitlines()
+            if line.strip()]
+
+
+def load_aliases(lit_dir):
+    p = Path(lit_dir) / "graph" / "aliases.json"
+    if not p.exists():
+        return {}
+    return json.loads(p.read_text(encoding="utf-8"))
+
+
+def save_aliases(lit_dir, aliases):
+    atomic_write(Path(lit_dir) / "graph" / "aliases.json",
+                 json.dumps(aliases, indent=2, sort_keys=True) + "\n")
+
+
+def write_edges(lit_dir, new_edges):
+    """Union new edges into edges.jsonl, healing as we go: existing endpoints
+    are remapped through the full alias table before the union, so stale
+    endpoints collapse onto canonical ones. Full idempotent rewrite, atomic."""
+    existing = remap_edges(load_edges(lit_dir), load_aliases(lit_dir))
+    combined = union_edges(existing, new_edges)
+    atomic_write(Path(lit_dir) / "graph" / "edges.jsonl",
+                 "".join(json.dumps(e, ensure_ascii=False) + "\n" for e in combined))
+    return len(combined)
+
+
+def boundary_nodes(lit_dir):
+    """Edge endpoints that have no papers/<id>.json. No placeholder records
+    are ever created for them (spec)."""
+    papers_dir = Path(lit_dir) / "papers"
+    have = {p.stem for p in papers_dir.glob("*.json")} if papers_dir.is_dir() else set()
+    endpoints = set()
+    for e in load_edges(lit_dir):
+        endpoints.add(bare_wid(e["source"]))
+        endpoints.add(bare_wid(e["target"]))
+    return endpoints - have
+
+
+def count_inbox(lit_dir):
+    p = Path(lit_dir) / "inbox.jsonl"
+    if not p.exists():
+        return 0
+    return sum(1 for line in p.read_text(encoding="utf-8").splitlines() if line.strip())
+
+
+def regenerate_index(lit_dir):
+    """Regenerate .lit/SKILL.md after any successful write operation."""
+    ensure_corpus(lit_dir)
+    papers = len(list((Path(lit_dir) / "papers").glob("*.json")))
+    text = render_index(papers, len(load_edges(lit_dir)),
+                        len(boundary_nodes(lit_dir)), count_inbox(lit_dir),
+                        now_iso())
+    atomic_write(Path(lit_dir) / "SKILL.md", text)
+
+
+# ---------------------------------------------------------------------------
 # OpenAlex network layer (the only code that touches the network)
 # ---------------------------------------------------------------------------
 
