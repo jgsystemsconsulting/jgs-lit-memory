@@ -5,6 +5,7 @@ Network calls never leave the test process: every test that reaches the
 network installs a fake via lit_fetch.http_get (see Task 3).
 """
 
+import contextlib
 import io
 import json
 import pathlib
@@ -309,10 +310,14 @@ def envelope(records):
     return json.dumps({"meta": {"count": len(records)}, "results": records})
 
 
+REAL_HTTP_GET = lit_fetch.http_get
+
+
 def fake_urlopen(handler):
     """Patch urllib.request.urlopen UNDER the real lit_fetch.http_get, for
     tests that exercise retry/backoff/BudgetExhausted logic itself. handler(url)
     returns (status, headers, body_text) or raises. Returns the seen URLs."""
+    lit_fetch.http_get = REAL_HTTP_GET   # undo any fake_http replacement
     calls = []
 
     class FakeResp:
@@ -431,6 +436,64 @@ def test_http_404_propagates():
     assert len(calls) == 1
 
 
+# ---------------------------------------------------------------------------
+# checks: singleton verbs (offline through the fake)
+# ---------------------------------------------------------------------------
+
+def test_singleton_capture_and_alias():
+    with tempfile.TemporaryDirectory() as tmp:
+        lit = pathlib.Path(tmp) / ".lit"
+
+        def handler(url):
+            assert "/works/W9999999999?" in url
+            return (200, {"x-ratelimit-remaining": "9999"},
+                    json.dumps(SAMPLE_PAYLOAD))   # canonical id W1111111111
+
+        lit_fetch.http_get = fake_http(handler)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            run = lit_fetch.Run()
+            lit_fetch.capture_identifier("W9999999999", True, lit, None, run)
+        assert run.written == 1 and run.skipped == 0 and run.failed == 0
+        assert "merge: W9999999999 -> W1111111111" in out.getvalue()
+        assert (lit / "papers" / "W1111111111.json").exists()
+        assert lit_fetch.load_aliases(lit) == {"W9999999999": "W1111111111"}
+        assert lit_fetch.load_edges(lit)[0]["source"] == "W1111111111"
+        assert "last-synced: " in (lit / "SKILL.md").read_text(encoding="utf-8")
+        # re-run: skip-if-exists, no rewrite, still counted
+        run2 = lit_fetch.Run()
+        with contextlib.redirect_stdout(io.StringIO()):
+            lit_fetch.capture_identifier("W9999999999", True, lit, None, run2)
+        assert run2.skipped == 1 and run2.written == 0 and run2.failed == 0
+
+
+def test_title_verb_verification_gate():
+    with tempfile.TemporaryDirectory() as tmp:
+        lit = pathlib.Path(tmp) / ".lit"
+
+        def handler(url):
+            assert "search=" in url and "per-page=5" in url
+            return (200, {"x-ratelimit-remaining": "9999"}, envelope(CANDIDATES))
+
+        lit_fetch.http_get = fake_http(handler)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            run = lit_fetch.Run()
+            wrote = lit_fetch.verb_title("A Sample Study of Graphs and Edges",
+                                         None, None, lit, None, run)
+        assert wrote is False
+        assert run.written == 0 and run.failed == 1
+        assert "top candidates" in out.getvalue()
+        assert not (lit / "papers" / "W1111111111.json").exists()
+        # surname disambiguates: writes one record
+        run2 = lit_fetch.Run()
+        with contextlib.redirect_stdout(io.StringIO()):
+            wrote = lit_fetch.verb_title("A Sample Study of Graphs and Edges",
+                                         "Doe", None, lit, None, run2)
+        assert wrote is True and run2.written == 1
+        assert (lit / "papers" / "W1111111111.json").exists()
+
+
 CHECKS = [
     test_fold,
     test_bare_ids,
@@ -447,6 +510,8 @@ CHECKS = [
     test_edges_and_aliases_roundtrip,
     test_index_and_status_counts,
     test_run_summary,
+    test_singleton_capture_and_alias,
+    test_title_verb_verification_gate,
     test_url_builders,
     test_parse_envelope,
     test_retry_then_success,

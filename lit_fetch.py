@@ -531,3 +531,169 @@ def warn_keyless(call_type, api_key):
         print("warning: {0} without OPENALEX_API_KEY; the keyless budget is "
               "$0.10/day and this call is budgeted".format(call_type),
               file=sys.stderr)
+
+
+# ---------------------------------------------------------------------------
+# verbs and CLI
+# ---------------------------------------------------------------------------
+
+def promote_payload(payload, lit_dir, run, seed=True, source="capture"):
+    """Write one already-fetched payload: record (skip-if-exists) plus edges,
+    then regenerate the index when anything changed (record written or edges
+    added), so edge-only changes never leave the index stale."""
+    ensure_corpus(lit_dir)
+    edges_before = len(load_edges(lit_dir))
+    record, wrote = write_one(payload, lit_dir, run, seed, source)
+    edges_after = write_edges(lit_dir, edges_of([record]))
+    if wrote or edges_after != edges_before:
+        regenerate_index(lit_dir)
+    return record
+
+
+def capture_identifier(identifier, is_wid_form, lit_dir, api_key, run):
+    """Singleton capture by DOI form or W-id. Records the 301 merge alias when
+    a W-id request resolves to a different canonical id, and prints one merge
+    note. DOI requests need no alias entry: they dedupe through the canonical
+    id itself."""
+    ensure_corpus(lit_dir)
+    status, headers, body = http_get(work_url(identifier, api_key))
+    payload = json.loads(body)
+    canonical = bare_wid(payload["id"])
+    requested = bare_wid(identifier) if is_wid_form else None
+    aliases = load_aliases(lit_dir)
+    if requested and requested != canonical and requested not in aliases:
+        aliases[requested] = canonical
+        save_aliases(lit_dir, aliases)
+        print("merge: {0} -> {1}".format(requested, canonical))
+    return promote_payload(payload, lit_dir, run, seed=True, source="capture")
+
+
+def verb_title(title, author, year, lit_dir, api_key, run):
+    """Verified title search. Returns True when the paper is present
+    afterwards: written now, or already in the corpus via skip-if-exists.
+
+    On no verified hit: writes nothing, counts one failure, and prints the top
+    candidates for a human decision."""
+    warn_keyless("title search", api_key)
+    status, headers, body = http_get(search_url(title, api_key))
+    candidates = parse_envelope(body)
+    hit = verify_title(title, candidates, author, year)
+    if hit is None:
+        run.fail(title, "verification failed")
+        print("no single verified match; top candidates:")
+        for c in candidates[:5]:
+            print("  {0}  {1}  {2}".format(bare_wid(c.get("id", "W?")),
+                                           c.get("publication_year"),
+                                           c.get("display_name")))
+        return False
+    promote_payload(hit, lit_dir, run, seed=True, source="capture")
+    return True
+
+
+VERB_FLAGS = ("doi", "openalex", "arxiv", "title", "ids", "inbox", "status", "check")
+
+
+def build_parser():
+    p = argparse.ArgumentParser(
+        prog="lit_fetch.py",
+        description="Capture OpenAlex works into a .lit corpus.")
+    p.add_argument("--doi", help="capture by DOI (singleton, free)")
+    p.add_argument("--openalex", help="capture by OpenAlex W-id (singleton, free)")
+    p.add_argument("--arxiv", help="arXiv id; requires --title (no arXiv lookup exists)")
+    p.add_argument("--title", help="verified title search; also the modifier of --arxiv")
+    p.add_argument("--author", help="surname disambiguator for --title/--arxiv")
+    p.add_argument("--year", help="year disambiguator for --title/--arxiv")
+    p.add_argument("--ids", help='pipe-separated W-ids, e.g. "W123|W456"')
+    p.add_argument("--inbox", action="store_true", help="triage .lit/inbox.jsonl")
+    p.add_argument("--status", action="store_true", help="print corpus summary")
+    p.add_argument("--check", action="store_true", help="live smoke test of endpoint forms")
+    p.add_argument("--dir", default=".lit", help="corpus root (default .lit)")
+    p.add_argument("--api-key", default=os.environ.get("OPENALEX_API_KEY"),
+                   help="OpenAlex API key (default env OPENALEX_API_KEY)")
+    p.add_argument("--seed", action="store_true",
+                   help="mark --ids records seed=true (batch override only)")
+    return p
+
+
+def pick_verb(args):
+    if args.arxiv and not args.title:
+        print("error: --arxiv requires --title (OpenAlex has no arXiv ID "
+              "lookup); supply the exact title, or capture the DOI with --doi",
+              file=sys.stderr)
+        sys.exit(2)
+    names = [n for n in VERB_FLAGS if getattr(args, n)]
+    if args.arxiv and "title" in names:
+        names.remove("title")   # --title is the required modifier of --arxiv
+    if len(names) != 1:
+        print("error: give exactly one of --doi/--openalex/--arxiv/--title/"
+              "--ids/--inbox/--status/--check", file=sys.stderr)
+        sys.exit(2)
+    return names[0]
+
+
+def validate_verb(args, verb):
+    if verb == "doi":
+        d = bare_doi(args.doi)
+        if not d or not d.startswith("10."):
+            print("error: --doi expects a DOI like 10.1038/nature12373",
+                  file=sys.stderr)
+            sys.exit(2)
+    if verb == "openalex":
+        if not WID_RE.match(args.openalex.strip()):
+            print("error: --openalex expects a W-id like W2741809807",
+                  file=sys.stderr)
+            sys.exit(2)
+
+
+def main(argv=None):
+    args = build_parser().parse_args(argv)
+    verb = pick_verb(args)
+    validate_verb(args, verb)
+    lit_dir = Path(args.dir)
+    api_key = args.api_key or None
+    run = Run()
+    try:
+        if verb == "doi":
+            try:
+                capture_identifier("doi:" + bare_doi(args.doi), False,
+                                   lit_dir, api_key, run)
+            except BudgetExhausted:
+                raise
+            except Exception as exc:
+                run.fail(args.doi, str(exc) or exc.__class__.__name__)
+        elif verb == "openalex":
+            try:
+                capture_identifier(bare_wid(args.openalex), True,
+                                   lit_dir, api_key, run)
+            except BudgetExhausted:
+                raise
+            except Exception as exc:
+                run.fail(args.openalex, str(exc) or exc.__class__.__name__)
+        elif verb == "arxiv":
+            print("note: resolving by verified title search (arXiv id "
+                  + args.arxiv + " is not an OpenAlex lookup key)")
+            verb_title(args.title, args.author, args.year, lit_dir, api_key, run)
+        elif verb == "title":
+            verb_title(args.title, args.author, args.year, lit_dir, api_key, run)
+        elif verb == "ids":
+            verb_ids(args.ids, lit_dir, api_key, args.seed, run)
+        elif verb == "inbox":
+            verb_inbox(lit_dir, api_key, run)
+        elif verb == "status":
+            return verb_status(lit_dir)
+        elif verb == "check":
+            return verb_check(api_key)
+    except BudgetExhausted:
+        print(run.summary())
+        print("budget exhausted; completed writes stand")
+        return 1
+    except Exception as exc:
+        print(run.summary())
+        print("error: " + (str(exc) or exc.__class__.__name__))
+        return 1
+    print(run.summary())
+    return 0 if run.failed == 0 else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
