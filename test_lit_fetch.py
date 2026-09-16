@@ -147,12 +147,92 @@ def test_verify_title():
     assert lit_fetch.verify_title(q, CANDIDATES, None, "1999") is None
 
 
+# ---------------------------------------------------------------------------
+# checks: queue, graph, index template
+# ---------------------------------------------------------------------------
+
+def test_chunk_ids():
+    ids = ["W3", "W1", "W2", "W1"] + ["W%d" % i for i in range(4, 250)]
+    chunks = lit_fetch.chunk_ids(ids)
+    assert all(len(c) <= 100 for c in chunks)
+    assert [len(c) for c in chunks] == [100, 100, 49]
+    flat = [w for c in chunks for w in c]
+    assert len(flat) == len(set(flat))
+    assert flat[:3] == ["W3", "W1", "W2"]
+    assert lit_fetch.chunk_ids([]) == []
+
+
+def test_parse_ref():
+    assert lit_fetch.parse_ref("doi:10.1038/nature12373") == ("doi", "10.1038/nature12373")
+    assert lit_fetch.parse_ref("W2741809807") == ("wid", "W2741809807")
+    assert lit_fetch.parse_ref("arxiv:2401.12345") == ("arxiv", "2401.12345")
+    assert lit_fetch.parse_ref("title:Some Title Here") == ("title", "Some Title Here")
+    assert lit_fetch.parse_ref("nonsense") is None
+    assert lit_fetch.parse_ref("") is None
+    assert lit_fetch.parse_ref(None) is None
+
+
+def test_entry_key_and_dedupe():
+    known = {"wid:W1111111111", "doi:10.1234/sample.2021",
+             "title:a sample study of graphs and edges"}
+    entries = [
+        {"ref": "W1111111111"},
+        {"ref": "doi:HTTPS://DOI.ORG/10.1234/Sample.2021"},
+        {"ref": "title:A Sample Study of Graphs and Edges",
+         "title": "A Sample Study of Graphs and Edges"},
+        {"ref": "doi:10.9999/new.thing"},
+        {"ref": "doi:10.9999/new.thing"},
+        {"ref": "title:  A  NEW Paper!", "title": "A  NEW Paper!"},
+    ]
+    for e in entries:
+        e["_ref"] = lit_fetch.parse_ref(e["ref"])
+    kept, dups = lit_fetch.dedupe_inbox(entries, known)
+    assert len(dups) == 4
+    assert [lit_fetch.entry_key(e) for e in kept] == [
+        "doi:10.9999/new.thing", "title:a new paper"]
+
+
+def test_union_edges():
+    a = [{"source": "W1", "target": "W2"}, {"source": "W1", "target": "W3"}]
+    b = [{"source": "W1", "target": "W2"}, {"source": "W2", "target": "W3"}]
+    assert lit_fetch.union_edges(a, b) == [
+        {"source": "W1", "target": "W2"},
+        {"source": "W1", "target": "W3"},
+        {"source": "W2", "target": "W3"},
+    ]
+
+
+def test_remap_edges():
+    edges = [{"source": "W1", "target": "W2"}, {"source": "W9", "target": "W3"}]
+    aliases = {"W2": "W5", "W5": "W7", "W9": "W1"}
+    assert lit_fetch.remap_edges(edges, aliases) == [
+        {"source": "W1", "target": "W7"},
+        {"source": "W1", "target": "W3"},
+    ]
+
+
+def test_render_index():
+    text = lit_fetch.render_index(3, 10, 5, 1, "2026-09-16T00:00:00Z")
+    assert "| 3 |" in text and "| 10 |" in text and "| 5 |" in text and "| 1 |" in text
+    assert "last-synced: 2026-09-16T00:00:00Z" in text
+    assert "biased" in text and "CC0" in text
+    assert "\u2014" not in lit_fetch.INDEX_TEMPLATE
+    assert "\u2014" not in text
+    assert "__" not in text
+
+
 CHECKS = [
     test_fold,
     test_bare_ids,
     test_reconstruct_abstract,
     test_normalize_work,
     test_verify_title,
+    test_chunk_ids,
+    test_parse_ref,
+    test_entry_key_and_dedupe,
+    test_union_edges,
+    test_remap_edges,
+    test_render_index,
 ]
 
 
