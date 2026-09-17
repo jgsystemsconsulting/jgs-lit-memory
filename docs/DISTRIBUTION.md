@@ -30,7 +30,7 @@ Last reviewed: 1.0.0 / 2026-09-17
 
 | Channel | Artifact | Status | Decision / reason | Date |
 |---|---|---|---|---|
-| GitHub About + topics + Release | `scripts/configure_repo.sh` | in progress | Applied by the checked-in script at publish (RR-B-21 description, homepage, 10 topics incl. one per host). | 2026-09-17 |
+| GitHub About + topics + Release | `scripts/configure_repo.sh` | in progress | Applied by the checked-in script at publish (RR-B-21 description, homepage, 15 topics incl. one per host). Description and topic set re-reviewed for search on 2026-09-17: `openalex-api` dropped (redundant), `claude-skills` / `skill-md` / `gemini-cli-extension` / `academic-research` / `research-tools` / `literature-search` added; `zotero` / `bibliography` deliberately excluded (not a reference manager; intent mismatch). | 2026-09-17 |
 | Org catalogue (labs.jgsystemsconsulting.com) | site entry | planned | RR-B-19 product entry; links install + licensing. Maintainer adds at next site update. | 2026-09-17 |
 | Community lists: awesome-claude-skills, awesome-gemini-cli-extensions | PR entry | deferred | MIT qualifies, but both lists are discretionary and manually reviewed. Revisit after first external usage signal rather than at first release. | 2026-09-17 |
 

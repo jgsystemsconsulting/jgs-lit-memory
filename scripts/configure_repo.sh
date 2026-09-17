@@ -7,10 +7,12 @@ set -euo pipefail
 
 OWNER="jgsystemsconsulting"
 REPO="jgs-lit-memory"
-DESCRIPTION="Capture scholarly papers from OpenAlex into a per-project local corpus (.lit) with the lit-capture skill. Works with ZCode, Claude Code, Cursor, Codex, Gemini CLI, and Copilot."
+DESCRIPTION="Capture academic papers (DOI, arXiv, OpenAlex id, or title) into a git-tracked literature corpus with a citation graph and offline inbox, inside each project. Your coding agent queries it before re-searching. One skill for Claude Code, ZCode, Cursor, Codex, Gemini CLI, Copilot."
 HOMEPAGE="https://jgsystemsconsulting.github.io/jgs-lit-memory/"
-# >=6 topics: product class + one per supported agent host + domain tags (RR-B-21)
-TOPICS=(agent-skills claude-code cursor gemini-cli openai-codex github-copilot zcode openalex literature-review openalex-api)
+# >=6 topics: product class + one per supported agent host + domain tags (RR-B-21).
+# Reviewed 2026-09-17 against topic-page browse traffic; zotero/bibliography
+# deliberately excluded (not a reference manager; intent mismatch).
+TOPICS=(agent-skills claude-skills skill-md gemini-cli-extension academic-research research-tools literature-search literature-review openalex claude-code cursor gemini-cli openai-codex github-copilot zcode)
 CI_CHECK="validate"
 BRANCH="$(gh api "repos/$OWNER/$REPO" --jq .default_branch)"
 
