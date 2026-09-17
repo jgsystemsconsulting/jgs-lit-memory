@@ -35,6 +35,7 @@ jobs:
               ".github/ISSUE_TEMPLATE/bug_report.yml",
               ".github/ISSUE_TEMPLATE/config.yml",
               ".github/ISSUE_TEMPLATE/improvement.yml",
+              ".github/pull_request_template.md",
           ]
           missing = [f for f in required if not pathlib.Path(f).is_file()]
           if missing:

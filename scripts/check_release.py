@@ -58,6 +58,7 @@ REQUIRED = [
     ".github/ISSUE_TEMPLATE/bug_report.yml",
     ".github/ISSUE_TEMPLATE/config.yml",
     ".github/ISSUE_TEMPLATE/improvement.yml",
+    ".github/pull_request_template.md",
 ]
 
 FORBIDDEN_PATH_PARTS = [
