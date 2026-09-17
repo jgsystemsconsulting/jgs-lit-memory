@@ -1,0 +1,7 @@
+jgs-lit-memory
+Copyright (c) 2026 JG Systems Consulting Ltd.
+
+This product distributes no third-party components. It calls the OpenAlex
+REST API (https://openalex.org) over the network at run time; OpenAlex
+metadata is CC0 (https://creativecommons.org/publicdomain/zero/1.0/).
+Reconstructed abstracts are for local corpus use.

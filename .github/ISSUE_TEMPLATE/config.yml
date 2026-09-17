@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability (private)
+    url: https://github.com/jgsystemsconsulting/jgs-lit-memory/security/advisories/new
+    about: Report security issues privately, never as a public issue.
+  - name: Question or usage help
+    url: https://github.com/jgsystemsconsulting/jgs-lit-memory/discussions
+    about: Questions and usage discussion. Bugs and improvements use the forms above.

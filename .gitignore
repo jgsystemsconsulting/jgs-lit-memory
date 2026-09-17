@@ -1,3 +1,8 @@
 __pycache__/
 *.pyc
+.pytest_cache/
 .lit/
+.bak
+.playwright-mcp/
+.tmp-install-check/
+release-notes.generated.md

@@ -1,0 +1,236 @@
+name: validate
+
+# Self-contained content-integrity gate. Inline bash + python3 stdlib only.
+# MUST NOT execute checked-out repository code (reads files only).
+# Runs on pull_request (not pull_request_target).
+
+on:
+  push:
+  pull_request:
+
+permissions: read-all
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Required files
+        run: |
+          python3 - <<'PY'
+          import pathlib, sys
+          required = [
+              "LICENSE", "COPYRIGHT", "NOTICE", "README.md", "CHANGELOG.md",
+              "RELEASE-INFO.txt", "CITATION.cff", "SECURITY.md",
+              "CONTRIBUTING.md", "CODE_OF_CONDUCT.md", ".gitignore",
+              "SKILLS.md", "docs/skill-usage.md", "docs/other-agents.md",
+              "docs/DISTRIBUTION.md", "docs/index.html", "docs/.nojekyll",
+              "install.py", "install.sh", "install.ps1", "test_lit_fetch.py",
+              "skills/lit-capture/SKILL.md", "skills/lit-capture/lit_fetch.py",
+              "scripts/check_release.py", "scripts/configure_repo.sh",
+              ".claude-plugin/marketplace.json", ".claude-plugin/plugin.json",
+              ".cursor-plugin/marketplace.json", ".cursor-plugin/plugin.json",
+              ".agents/plugins/marketplace.json", "gemini-extension.json",
+              ".github/ISSUE_TEMPLATE/bug_report.yml",
+              ".github/ISSUE_TEMPLATE/config.yml",
+              ".github/ISSUE_TEMPLATE/improvement.yml",
+          ]
+          missing = [f for f in required if not pathlib.Path(f).is_file()]
+          if missing:
+              print("::error::required files missing: " + ", ".join(missing))
+              sys.exit(1)
+          print("OK: required files present.")
+          PY
+
+      - name: Forbidden paths
+        run: |
+          python3 - <<'PY'
+          import subprocess, sys
+          tracked = subprocess.run(
+              ["git", "ls-files"], capture_output=True, text=True, check=True
+          ).stdout.splitlines()
+          parts = ("__pycache__", ".venv", ".worktrees", ".pytest_cache",
+                   ".ruff_cache", ".bak")
+          bad = [f for f in tracked if any(p in f for p in parts)]
+          if bad:
+              print("::error::forbidden tracked paths: " + ", ".join(bad[:20]))
+              sys.exit(1)
+          print("OK: no forbidden tracked paths.")
+          PY
+
+      - name: Forbidden content
+        run: |
+          python3 - <<'PY'
+          import pathlib, re, subprocess, sys
+          tracked = subprocess.run(
+              ["git", "ls-files"], capture_output=True, text=True, check=True
+          ).stdout.splitlines()
+          rx_key = re.compile(r"BEGIN [A-Z ]*PRIVATE KEY")
+          rx_conf = re.compile(r"CONFIDENTIAL\s+[-—]\s+Not for external distribution")
+          rx_aws = re.compile(r"AKIA[0-9A-Z]{16}")
+          rx_slack = re.compile(r"xox[baprs]-[0-9A-Za-z-]{10,}")
+          hits = []
+          for f in tracked:
+              if f.startswith(".github/"):
+                  continue
+              if not f.endswith((".py", ".md", ".txt", ".yml", ".yaml",
+                                 ".json", ".cff", ".html", ".sh", ".ps1", ".css")):
+                  continue
+              text = pathlib.Path(f).read_text(encoding="utf-8", errors="ignore")
+              if any(
+                  rx.search(text)
+                  for rx in (rx_key, rx_conf, rx_aws, rx_slack)
+              ):
+                  hits.append(f)
+          if hits:
+              print("::error::leak sentinel in: " + ", ".join(hits[:20]))
+              sys.exit(1)
+          print("OK: no leak sentinels.")
+          PY
+
+      - name: Machine-local paths
+        run: |
+          python3 - <<'PY'
+          import pathlib, re, subprocess, sys
+          tracked = subprocess.run(
+              ["git", "ls-files"], capture_output=True, text=True, check=True
+          ).stdout.splitlines()
+          rxs = [
+              re.compile(r"[Cc]:[/\\]Users[/\\][A-Za-z0-9_.-]+"),
+              re.compile(r"/Users/[A-Za-z0-9_.-]+/"),
+              re.compile(r"/home/[A-Za-z0-9_.-]+/"),
+          ]
+          hits = []
+          for f in tracked:
+              if f.startswith(".github/"):
+                  continue
+              if not f.endswith((".py", ".md", ".txt", ".yml", ".yaml",
+                                 ".json", ".cff", ".html", ".sh", ".ps1")):
+                  continue
+              text = pathlib.Path(f).read_text(encoding="utf-8", errors="ignore")
+              if any(rx.search(text) for rx in rxs):
+                  hits.append(f)
+          if hits:
+              print("::error::machine-local path string in: " + ", ".join(hits[:20]))
+              sys.exit(1)
+          print("OK: no machine-local paths.")
+          PY
+
+      - name: Headers present
+        run: |
+          python3 - <<'PY'
+          import pathlib, subprocess, sys
+          tracked = subprocess.run(
+              ["git", "ls-files"], capture_output=True, text=True, check=True
+          ).stdout.splitlines()
+          sentinel = "Copyright (c) 2026 JG Systems Consulting Ltd"
+          missing = []
+          for f in tracked:
+              if not f.endswith(".py"):
+                  continue
+              head = pathlib.Path(f).read_text(encoding="utf-8", errors="ignore")[:600]
+              if sentinel not in head or "SPDX-License-Identifier" not in head:
+                  missing.append(f)
+          if missing:
+              print("::error::header/SPDX missing: " + ", ".join(missing[:20]))
+              sys.exit(1)
+          print("OK: python headers present.")
+          PY
+
+      - name: BOM check
+        run: |
+          python3 - <<'PY'
+          import pathlib, sys
+          hits = []
+          for pat in ("*.toml", "*.json", "*.yaml", "*.yml", "*.cff"):
+              for p in pathlib.Path(".").rglob(pat):
+                  if ".git" in p.parts or not p.is_file():
+                      continue
+                  if p.read_bytes()[:3] == b"\xef\xbb\xbf":
+                      hits.append(p.as_posix())
+          if hits:
+              print("::error::UTF-8 BOM in: " + ", ".join(hits))
+              sys.exit(1)
+          print("OK: no BOM in parser-critical files.")
+          PY
+
+      - name: Version consistency
+        run: |
+          python3 - <<'PY'
+          import json, pathlib, re, sys
+          def changelog_top():
+              t = pathlib.Path("CHANGELOG.md").read_text(encoding="utf-8")
+              m = re.search(r"^##\s*\[?v?(\d+\.\d+\.\d+)", t, re.M)
+              return m.group(1) if m else None
+          def release_info():
+              t = pathlib.Path("RELEASE-INFO.txt").read_text(encoding="utf-8")
+              m = re.search(r"^Version:\s*(\d+\.\d+\.\d+)", t, re.M)
+              return m.group(1) if m else None
+          def citation():
+              t = pathlib.Path("CITATION.cff").read_text(encoding="utf-8")
+              m = re.search(r"^version:\s*[\"']?(\d+\.\d+\.\d+)", t, re.M)
+              return m.group(1) if m else None
+          def plugin(path):
+              p = pathlib.Path(path)
+              if not p.is_file():
+                  return None
+              return json.loads(p.read_text(encoding="utf-8")).get("version")
+          vals = {
+              "CHANGELOG": changelog_top(),
+              "RELEASE-INFO": release_info(),
+              "CITATION.cff": citation(),
+              "claude plugin.json": plugin(".claude-plugin/plugin.json"),
+              "cursor plugin.json": plugin(".cursor-plugin/plugin.json"),
+              "gemini-extension.json": plugin("gemini-extension.json"),
+          }
+          print(vals)
+          uniq = {v for v in vals.values() if v}
+          if None in vals.values() or len(uniq) != 1:
+              print("::error::version mismatch across sources")
+              sys.exit(1)
+          print("OK: all versions agree at " + uniq.pop() + ".")
+          PY
+
+      - name: SKILL.md frontmatter lint
+        run: |
+          python3 - <<'PY'
+          import pathlib, re, sys
+          fail = False
+          skills = sorted(pathlib.Path("skills").glob("*/SKILL.md"))
+          if not skills:
+              print("::error::no skills/*/SKILL.md found")
+              sys.exit(1)
+          for p in skills:
+              t = p.read_text(encoding="utf-8")
+              m = re.match(r"^---\s*\n(.*?)\n---\s*\n", t, re.S)
+              if not m:
+                  print(f"::error::{p}: missing YAML frontmatter")
+                  fail = True
+                  continue
+              fm = m.group(1)
+              body = t[m.end():]
+              nm = re.search(r"^name:\s*(\S+)", fm, re.M)
+              if not nm:
+                  print(f"::error::{p}: frontmatter missing name")
+                  fail = True
+              else:
+                  name = nm.group(1).strip().strip('"').strip("'")
+                  if name != p.parent.name:
+                      print(f"::error::{p}: name {name!r} != dir {p.parent.name!r}")
+                      fail = True
+                  if not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", name):
+                      print(f"::error::{p}: name not kebab-case: {name}")
+                      fail = True
+              if not re.search(r"^description:\s*\S", fm, re.M):
+                  print(f"::error::{p}: frontmatter missing description")
+                  fail = True
+              if "## When to use" not in body:
+                  print(f"::error::{p}: missing '## When to use'")
+                  fail = True
+              if not re.search(r"Prerequisites|Requirements|^compatibility:", body, re.M):
+                  print(f"::error::{p}: missing prerequisites marker")
+                  fail = True
+          print("OK: SKILL.md frontmatter valid." if not fail else "frontmatter lint failed")
+          sys.exit(1 if fail else 0)
+          PY

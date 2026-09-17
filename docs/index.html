@@ -1,0 +1,143 @@
+<!doctype html>
+<!-- Copyright (c) 2026 JG Systems Consulting Ltd. Source: https://github.com/jgsystemsconsulting/jgs-lit-memory. See LICENSE. -->
+<!-- SPDX-License-Identifier: MIT -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>jgs-lit-memory: local literature memory for coding agents</title>
+<meta name="description" content="Capture scholarly papers from OpenAlex into a .lit corpus with the lit-capture skill. One record per paper, citation edges, offline inbox, six agent hosts.">
+<link rel="canonical" href="https://jgsystemsconsulting.github.io/jgs-lit-memory/">
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="site.css">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://jgsystemsconsulting.github.io/jgs-lit-memory/">
+<meta property="og:title" content="jgs-lit-memory: local literature memory for coding agents">
+<meta property="og:description" content="Capture scholarly papers from OpenAlex into a .lit corpus with the lit-capture skill. One record per paper, citation edges, offline inbox, six agent hosts.">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="jgs-lit-memory">
+<meta name="twitter:description" content="Capture scholarly papers from OpenAlex into a .lit corpus with the lit-capture skill. One record per paper, citation edges, offline inbox, six agent hosts.">
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"SoftwareApplication","name":"jgs-lit-memory","applicationCategory":"DeveloperApplication","operatingSystem":"Windows, macOS, Linux","softwareVersion":"1.0.0","license":"https://github.com/jgsystemsconsulting/jgs-lit-memory/blob/main/LICENSE","url":"https://jgsystemsconsulting.github.io/jgs-lit-memory/","codeRepository":"https://github.com/jgsystemsconsulting/jgs-lit-memory","author":{"@type":"Organization","name":"JG Systems Consulting Ltd"}}
+</script>
+</head>
+<body>
+
+<header class="masthead"><div class="wrap">
+  <span>CLASSIFICATION: <b>PUBLIC</b></span>
+  <span>LICENCE: <b>MIT</b></span>
+  <span>DOC-ID: <b>JGS-LIT-MEMORY</b></span>
+  <span>REV <b>1.0.0</b></span>
+</div></header>
+
+<nav class="site" aria-label="Site"><div class="wrap">
+  <a href="#what">What it is</a>
+  <a href="#verbs">Verbs</a>
+  <a href="#agents">Agents</a>
+  <a href="#usage">Usage</a>
+  <a href="#install">Install</a>
+  <a href="https://github.com/jgsystemsconsulting/jgs-lit-memory">Repository</a>
+  <a href="https://labs.jgsystemsconsulting.com/licensing.html">Licensing</a>
+</div></nav>
+
+<main>
+<div class="hero"><div class="wrap">
+  <h1>jgs-lit-memory</h1>
+  <p>Capture the papers once. Query the corpus, not the internet, next time.</p>
+  <p class="sub">One skill and one script: papers from OpenAlex into a git-tracked .lit corpus in your project.</p>
+  <div class="cta">
+    <a class="btn btn-primary" href="#install">Install <span aria-hidden="true">&rarr;</span></a>
+    <a class="btn btn-ghost" href="#usage">How it runs <span aria-hidden="true">&rarr;</span></a>
+  </div>
+</div></div>
+
+<section id="what"><div class="wrap">
+  <div class="shead"><span class="label">&sect;01 &middot; What it is</span><h2>A corpus on your disk, not a subscription</h2></div>
+  <p class="lead">Research conversations re-find the same papers every week. jgs-lit-memory turns each keep-worthy paper into one normalized JSON record under <code>.lit/</code> in the project that produced it, with citation edges between records. The corpus is plain files, git-tracked, and survives every session. The next conversation asks the corpus before it asks the internet.</p>
+  <div class="grid g3" style="margin-top:1.5rem">
+    <div class="cell"><h3>Papers and edges</h3><p><code>papers/&lt;W-id&gt;.json</code>, one record per work; <code>graph/edges.jsonl</code> carries who cites whom. Atomic writes: a crash never leaves a half-written file.</p></div>
+    <div class="cell"><h3>Offline inbox</h3><p>Papers land in <code>inbox.jsonl</code> the moment they come up. No network needed. A triage run resolves the queue and reports what failed, with reasons.</p></div>
+    <div class="cell"><h3>Corpus answers first</h3><p>A generated <code>.lit/SKILL.md</code> index carries counts and query recipes, so the agent checks the corpus before re-searching OpenAlex.</p></div>
+  </div>
+</div></section>
+
+<section id="verbs"><div class="wrap">
+  <div class="shead"><span class="label">&sect;02 &middot; Verbs</span><h2>One resolution verb per call</h2></div>
+  <p class="lead"><code>lit_fetch.py</code> is the only component that touches the network, and it talks to OpenAlex only. Everything else is agent reading and writing. Singleton DOI and W-id lookups are free; budgeted calls warn without an API key.</p>
+  <div class="sheet" style="margin-top:1.5rem;padding:0;overflow:auto">
+  <table class="data">
+    <caption>Resolution verbs. Exit codes: 0 success or already present, 1 failure, 2 usage error.</caption>
+    <thead>
+      <tr><th>Invocation</th><th>Behavior</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><code>--doi &lt;doi&gt;</code></td><td>Singleton capture by DOI (free). seed=true, source=capture.</td></tr>
+      <tr><td><code>--openalex &lt;W-id&gt;</code></td><td>Singleton capture by W-id (free). Same write semantics.</td></tr>
+      <tr><td><code>--arxiv &lt;id&gt; --title &lt;t&gt;</code></td><td>OpenAlex has no arXiv lookup; resolves through the verified title search. Bare <code>--arxiv</code> is a usage error.</td></tr>
+      <tr><td><code>--title &lt;t&gt; [--author] [--year]</code></td><td>Budgeted search with client-side verification. Near-misses print as candidates and write nothing.</td></tr>
+      <tr><td><code>--ids "W1|W2|..."</code></td><td>Batch fetch, 100 per call, skips existing records.</td></tr>
+      <tr><td><code>--inbox</code></td><td>Triage the offline queue: dedupe, resolve, rewrite once. Failures stay queued with their reason.</td></tr>
+      <tr><td><code>--status</code></td><td>Corpus summary. Read-only.</td></tr>
+      <tr><td><code>--check</code></td><td>Live smoke test of the four endpoint forms.</td></tr>
+    </tbody>
+  </table>
+  </div>
+</div></section>
+
+<section id="agents"><div class="wrap">
+  <div class="shead"><span class="label">&sect;03 &middot; Agents</span><h2>One pack, every main host</h2></div>
+  <p class="lead"><code>install.py</code> already targets the main coding agents. Native folder copy for ZCode, Claude Code, OpenAI Codex, GitHub Copilot CLI, and OpenClaw. Gemini CLI as an extension. Cursor as project-local rules. Run <code>python install.py --agent all</code> for the user-global hosts, then <code>--agent cursor</code> in the repo that needs rules. Per-path table: <a href="https://github.com/jgsystemsconsulting/jgs-lit-memory/blob/main/docs/other-agents.md">docs/other-agents.md</a>.</p>
+  <div class="grid g3" style="margin-top:1.5rem">
+    <div class="cell"><h3>ZCode</h3><p>Native folder. <code>~/.zcode/skills/&lt;skill&gt;/</code>. <code>--agent zcode</code></p></div>
+    <div class="cell"><h3>Claude Code</h3><p>Native folder, namespaced. <code>~/.claude/skills/jgs/&lt;skill&gt;/</code>. <code>--agent claude</code></p></div>
+    <div class="cell"><h3>Cursor</h3><p>Project-local <code>.mdc</code> rules. Run in the repo you want. <code>--agent cursor</code></p></div>
+    <div class="cell"><h3>Gemini CLI</h3><p>Extension under <code>~/.gemini/extensions/</code>. <code>--agent gemini</code></p></div>
+    <div class="cell"><h3>OpenAI Codex</h3><p>Native folder. <code>~/.agents/skills/jgs/&lt;skill&gt;/</code>. <code>--agent codex</code></p></div>
+    <div class="cell"><h3>GitHub Copilot CLI</h3><p>Native folder. <code>~/.copilot/skills/jgs/&lt;skill&gt;/</code>. <code>--agent copilot</code></p></div>
+  </div>
+</div></section>
+
+<section id="usage"><div class="wrap">
+  <div class="shead"><span class="label">&sect;04 &middot; Usage</span><h2>Conversational, not a slash command</h2></div>
+  <p class="lead">The <code>lit-capture</code> skill triggers when a paper comes up with enough identity to fetch (DOI, arXiv id, OpenAlex W-id, or exact title plus author or year) and looks worth keeping. It scans the conversation, dedupes against the corpus, then captures offline or fetches now with your consent.</p>
+  <div class="sheet" style="margin-top:1.5rem"><pre><span class="c"># say this in a research conversation</span>
+Capture this one: 10.1038/nature12373
+Save that arXiv paper, 2401.12345, "Attention Is All You Need"
+What do we have on citation graph bias? Check the corpus first.</pre></div>
+  <p class="lead" style="margin-top:1.5rem">Direct script use, after install (ZCode path shown; other hosts use their installed folder):</p>
+  <div class="sheet" style="margin-top:1.5rem"><pre><span class="c"># status is read-only; try it first</span>
+python "$HOME/.zcode/skills/lit-capture/lit_fetch.py" --status
+python "$HOME/.zcode/skills/lit-capture/lit_fetch.py" --doi 10.1038/nature12373
+python "$HOME/.zcode/skills/lit-capture/lit_fetch.py" --inbox</pre></div>
+  <p class="lead" style="margin-top:1.5rem">Full invoke and first-run detail, limits, and corpus layout: <a href="https://github.com/jgsystemsconsulting/jgs-lit-memory/blob/main/docs/skill-usage.md">docs/skill-usage.md</a>. Skill index: <a href="https://github.com/jgsystemsconsulting/jgs-lit-memory/blob/main/SKILLS.md">SKILLS.md</a>.</p>
+</div></section>
+
+<section id="install"><div class="wrap">
+  <div class="shead"><span class="label">&sect;05 &middot; Install</span><h2>Clone, install, restart, capture</h2></div>
+  <p class="lead">Prerequisites: Python 3.9+ (stdlib only), network access to api.openalex.org, an OpenAlex API key optional. Install into every user-global host, or pick one. Restart the agent session so it discovers the skill.</p>
+  <div class="sheet" style="margin-top:1.5rem"><pre><span class="c"># Python 3.9+, stdlib only. OpenAlex over HTTPS.</span>
+git clone https://github.com/jgsystemsconsulting/jgs-lit-memory
+cd jgs-lit-memory
+python install.py --agent all     <span class="c"># ZCode, Claude Code, Codex, Copilot, OpenClaw, Gemini</span>
+python install.py --agent cursor  <span class="c"># project-local .cursor/rules</span>
+python install.py --dry-run
+python install.py --list-agents</pre></div>
+  <p class="lead" style="margin-top:1.5rem">Prefer your agent to do it? The paste-ready "Install with your AI agent" prompt is in the <a href="https://github.com/jgsystemsconsulting/jgs-lit-memory/blob/main/README.md">README</a>. In-host install also works: Claude Code <code>/plugin marketplace add jgsystemsconsulting/jgs-lit-memory</code>, Gemini <code>gemini extensions install</code> from the repo URL.</p>
+</div></section>
+</main>
+
+<footer><div class="wrap">
+  <div class="tblock">
+    <div><span class="label">Product</span><b>jgs-lit-memory</b></div>
+    <div><span class="label">Rev</span><b>1.0.0</b></div>
+    <div><span class="label">Licence</span><b>MIT</b></div>
+    <div><span class="label">Repository</span><b><a href="https://github.com/jgsystemsconsulting/jgs-lit-memory">github.com/jgsystemsconsulting</a></b></div>
+    <div><span class="label">Source</span><b>OpenAlex (CC0 metadata)</b></div>
+    <div><span class="label">Owner</span><b>JG Systems Consulting Ltd</b></div>
+  </div>
+  <p class="foot-note">&copy; 2026 JG Systems Consulting Ltd. MIT Licence. See LICENSE. To request a commercial or academic licence for JGSC Labs products, or if you are unsure which licence you need, use <a href="https://labs.jgsystemsconsulting.com/licensing.html">labs.jgsystemsconsulting.com/licensing.html</a>.</p>
+</div></footer>
+
+</body>
+</html>

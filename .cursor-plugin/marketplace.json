@@ -1,0 +1,14 @@
+{
+  "name": "jgs-lit-memory",
+  "owner": {"name": "JG Systems Consulting Ltd"},
+  "metadata": {
+    "description": "Capture scholarly papers from OpenAlex into a per-project local corpus with the lit-capture skill for coding agents."
+  },
+  "plugins": [
+    {
+      "name": "jgs-lit-memory",
+      "source": ".",
+      "description": "Capture scholarly papers from OpenAlex into a per-project local corpus with the lit-capture skill for coding agents."
+    }
+  ]
+}

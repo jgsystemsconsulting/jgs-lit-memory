@@ -1,3 +1,5 @@
+# Copyright (c) 2026 JG Systems Consulting Ltd. Source: https://github.com/jgsystemsconsulting/jgs-lit-memory. See LICENSE.
+# SPDX-License-Identifier: MIT
 """lit_fetch.py: capture OpenAlex works into a .lit corpus.
 
 Single file, Python 3.9+ standard library only. Part of jgs-lit-memory.

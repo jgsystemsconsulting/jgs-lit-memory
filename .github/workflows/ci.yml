@@ -1,0 +1,29 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.9", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Offline test suite
+        run: python test_lit_fetch.py
+      - name: Install packaging smoke
+        run: |
+          python install.py --dest .tmp-install-check
+          test -f .tmp-install-check/lit-capture/SKILL.md
+          test -f .tmp-install-check/lit-capture/lit_fetch.py

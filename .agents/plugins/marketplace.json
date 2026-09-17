@@ -1,0 +1,10 @@
+{
+  "plugins": [
+    {
+      "name": "jgs-lit-memory",
+      "source": {"path": "./"},
+      "interface": {"displayName": "jgs-lit-memory"},
+      "description": "Capture scholarly papers from OpenAlex into a per-project local corpus with the lit-capture skill for coding agents."
+    }
+  ]
+}

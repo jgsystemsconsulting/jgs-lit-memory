@@ -1,0 +1,11 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "jgs-lit-memory"
+version: "1.0.0"
+date-released: "2026-09-17"
+authors:
+  - name: "JG Systems Consulting Ltd"
+    email: "support@jgsystemsconsulting.com"
+repository-code: "https://github.com/jgsystemsconsulting/jgs-lit-memory"
+url: "https://jgsystemsconsulting.github.io/jgs-lit-memory/"
+license: MIT

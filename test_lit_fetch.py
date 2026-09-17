@@ -1,8 +1,10 @@
+# Copyright (c) 2026 JG Systems Consulting Ltd. Source: https://github.com/jgsystemsconsulting/jgs-lit-memory. See LICENSE.
+# SPDX-License-Identifier: MIT
 """Offline checks for lit_fetch.py. Plain asserts, no test framework.
 
 Run: python test_lit_fetch.py   (exit 0 when all checks pass)
 Network calls never leave the test process: every test that reaches the
-network installs a fake via lit_fetch.http_get (see Task 3).
+network installs a fake via lit_fetch.http_get.
 """
 
 import contextlib
@@ -12,6 +14,8 @@ import pathlib
 import sys
 import tempfile
 import urllib.parse
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent / "skills" / "lit-capture"))
 
 import lit_fetch
 
