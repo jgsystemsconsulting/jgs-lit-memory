@@ -64,10 +64,29 @@ One resolution verb per invocation.
 | `--inbox` | Triage `.lit/inbox.jsonl`: dedupe, resolve, rewrite the queue once. Failures stay queued with their reason. |
 | `--status` | Corpus summary. Read-only. |
 | `--check` | Live smoke test of the four endpoint forms. |
+| `--enrich-pending` | List briefs awaiting enrichment: `pending` and `partial` as JSONL rows; unreadable files are labeled `invalid`. Read-only. |
+| `--brief-status [W-id]` | Brief counts by status and basis; with an id, print that brief's JSON. Read-only. |
+| `--brief-check [W-id]` | Validate one brief or all (schema, claim graph, derived fields). Exit 1 when invalid. |
+| `--brief-write --id <W-id> --file <payload.json> [--human]` | Validate and atomically write a brief. Replaces the `agent` block, keeps `human` unless `--human`, derives `status` and `basis`. |
+| `--brief-restub --id <W-id>` | Reset the brief's agent shell and enrich stamps to pending. Keeps `human`. |
 
 Common flags: `--dir <path>` (default `.lit`), `--api-key <key>` (default env
 `OPENALEX_API_KEY`), `--seed`, `--author`, `--year`. Exit codes: 0 success or
-already present, 1 any failure, 2 usage error.
+already present, 1 any failure (including an invalid `--brief-check` result
+or a rejected `--brief-write`), 2 usage error.
+
+## Paper briefs
+
+First load of a paper also creates `.lit/briefs/<W-id>.json`, a `pending`
+stub the chat agent fills by draining the enrichment queue. The Python
+script never calls an LLM; it stubs, lists, validates, and atomically
+writes. The agent drafts brief content (overview, claims with an in-paper
+`supports` / `contradicts` graph, methods, limits, why it matters) and
+submits it through `--brief-write`; `status` and `basis` are derived by the
+script and never taken from the payload. `human` fields are merge-only: a
+normal write preserves them, and `--human` replaces them only when the user
+dictated human notes this turn. After updating this repo, re-run
+`python install.py` so installed skill copies pick up the new verbs.
 
 ## Corpus layout
 
@@ -76,6 +95,7 @@ already present, 1 any failure, 2 usage error.
 ```
 .lit/
   papers/<W-id>.json      one normalized record per paper
+  briefs/<W-id>.json      analysis sidecar per paper (agent-authored, script-validated)
   graph/edges.jsonl       {"source": citing W-id, "target": cited W-id}, one per line
   graph/aliases.json      {"alias W-id": "canonical W-id"} recorded on 301 merges
   findings/<YYYY>-<slug>.md  optional human notes

@@ -1,6 +1,6 @@
 ---
 name: lit-capture
-description: Capture scholarly papers met in research conversations into this project's .lit corpus, triage the capture inbox, and answer literature questions from the local corpus before re-searching. Use when a paper with a DOI, arXiv id, OpenAlex W-id, or exact title plus author or year comes up and looks worth keeping, when the user asks to capture, save, or file a paper, or when a literature question may already be answered by the corpus. Not for casual mentions the user has not asked to keep.
+description: Capture scholarly papers met in research conversations into this project's .lit corpus, triage the capture inbox, and answer literature questions from the local corpus before re-searching. Use when a paper with a DOI, arXiv id, OpenAlex W-id, or exact title plus author or year comes up and looks worth keeping, when the user asks to capture, save, or file a paper, or when a literature question may already be answered by the corpus. Not for casual mentions the user has not asked to keep. After capture, drain the paper-brief enrichment queue with --enrich-pending.
 ---
 
 <!-- Copyright (c) 2026 JG Systems Consulting Ltd. Source: https://github.com/jgsystemsconsulting/jgs-lit-memory. See LICENSE. -->
@@ -81,6 +81,64 @@ Title searches and batches are budgeted calls; without an API key the script
 warns and draws on the small keyless daily budget. Singleton DOI and W-id
 lookups are free.
 
+## Paper briefs
+
+Every captured paper gets an analysis brief sidecar at
+`.lit/briefs/<W-id>.json`. The script creates a `pending` stub automatically
+when a paper is first written. Briefs are the rationale layer: what the paper
+claims, how it was tested, its limits, and why it matters here. Bib metadata
+stays in `papers/`; the script owns stubs, validation, and stamps; the agent
+authors brief content. The Python script never calls an LLM.
+
+Drain the enrichment queue after every successful capture, and at the start
+of any lit work:
+
+```bash
+python "$HOME/.zcode/skills/lit-capture/lit_fetch.py" --enrich-pending
+```
+
+For each listed id (keep it to about three per turn; the rest stay queued):
+
+1. Read `.lit/papers/<id>.json`.
+2. Use fulltext when clearly available (a local file or a readable OA URL in
+   the paper record); otherwise the abstract. Set each claim's `basis`
+   honestly; the script derives the brief's top-level `basis`.
+3. Draft the full brief JSON per the schema in the stub: overview, claims
+   (in-paper argument graph only: `supports` / `contradicts` point at claim
+   ids inside this same brief), methods_tests, limits, why_it_matters,
+   related_in_corpus, open_questions. Unknown `page` / `section` stay null.
+4. Write it through the script, never a hand edit:
+
+```bash
+python "$HOME/.zcode/skills/lit-capture/lit_fetch.py" --brief-write --id W123 --file brief.json
+```
+
+   Add `--human` only when the user dictated human notes this turn, and
+   include a `human` block in the payload then. Every other write replaces
+   the `agent` block and preserves `human`.
+
+5. Check what you wrote and fix failures before finishing the turn:
+
+```bash
+python "$HOME/.zcode/skills/lit-capture/lit_fetch.py" --brief-check
+```
+
+6. `git add .lit` together with papers and edges as today.
+
+Honesty constraints: do not invent pages, tests, or results absent from the
+source basis; prefer claim `confidence` of `low` or `med` for abstract-only
+fills; never mint cross-paper claim ids; do not clear `human.*` unless the
+user dictated human notes this turn.
+
+Reset an agent block for a fresh re-enrich (basis upgrade to fulltext is a
+good reason):
+
+```bash
+python "$HOME/.zcode/skills/lit-capture/lit_fetch.py" --brief-restub --id W123
+```
+
+`findings/*.md` stays an optional human diary; briefs do not require one.
+
 ## Findings stub (optional)
 
 For papers worth a note, write `findings/<YYYY>-<slug>.md` from this template:
@@ -113,9 +171,13 @@ or delete it, then re-run.
 ## Query the corpus
 
 Read `.lit/SKILL.md` first each session (counts, recipes, last-synced), then
-answer literature questions from `papers/` and `graph/edges.jsonl` before
-re-searching. The index carries copy-pasteable recipes: title grep, boundary
-ID extraction, edges per paper, papers citing a given W-id.
+answer literature questions from briefs, papers, and `graph/edges.jsonl`
+before re-searching the web. For a paper already in scope, read its brief
+first: prefer `human.*` when non-null, and the human claims array replaces
+the agent claims array only when it holds at least one claim with text.
+Then the paper record, then the edges. The index carries copy-pasteable
+recipes: title grep, boundary ID extraction, edges per paper, papers citing
+a given W-id.
 
 ## Limits
 
