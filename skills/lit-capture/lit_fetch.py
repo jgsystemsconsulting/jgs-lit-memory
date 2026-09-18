@@ -1246,8 +1246,94 @@ def verb_brief_check(lit_dir, wid):
     return 0 if ok else 1
 
 
+def verb_brief_write(lit_dir, raw_id, payload_path, human_flag):
+    """Validate a brief payload and atomically write it.
+
+    --id resolves through the paper alias table and must have a paper record.
+    The payload's agent object is required and replaces the stored agent
+    block. The human block is kept unless --human, in which case the payload
+    must carry a human object and replaces. id, schema_version, status,
+    basis, enriched_at, enrichment_source, and paper_captured_at are
+    script-owned: payload values for them are ignored, status and basis are
+    derived from content. On any validation failure the previous brief file
+    is left untouched and no temp file is left behind."""
+    aliases = load_aliases(lit_dir)
+    wid = resolve_alias(bare_wid(raw_id), aliases)
+    paper_p = Path(lit_dir) / "papers" / (wid + ".json")
+    if not paper_p.exists():
+        print("error: no paper record for {0}; fetch the paper before "
+              "writing its brief".format(wid), file=sys.stderr)
+        return 1
+    try:
+        payload = json.loads(Path(payload_path).read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError, OSError) as exc:
+        print("error: cannot read payload {0}: {1}".format(payload_path, exc),
+              file=sys.stderr)
+        return 1
+    if not isinstance(payload, dict) or not isinstance(payload.get("agent"), dict):
+        print("error: brief payload needs an agent object", file=sys.stderr)
+        return 1
+    existing = load_brief(lit_dir, wid)
+    if human_flag:
+        if not isinstance(payload.get("human"), dict):
+            print("error: --human needs a human object in the payload",
+                  file=sys.stderr)
+            return 1
+        # Normalize onto the full human shell so missing keys stay null/[]
+        # (payload may only carry the fields the agent wants to set).
+        human = dict(empty_human_block())
+        human.update(payload["human"])
+    else:
+        human = (existing or {}).get("human") or empty_human_block()
+    agent = payload["agent"]
+    try:
+        ids = validate_claim_lists(agent, human)
+    except BriefValidationError as exc:
+        print("error: {0}".format(exc), file=sys.stderr)
+        return 1
+    paper = json.loads(paper_p.read_text(encoding="utf-8"))
+    brief = {"id": wid,
+             "schema_version": BRIEF_SCHEMA_VERSION,
+             "status": derive_status(agent, ids),
+             "basis": derive_basis(agent),
+             "enriched_at": now_iso(),
+             "enrichment_source": "mixed" if human_flag else "agent",
+             "paper_captured_at": paper_capture_stamp(paper),
+             "agent": agent,
+             "human": human}
+    problems = validate_brief(brief)
+    if problems:
+        for problem in problems:
+            print("error: {0}".format(problem), file=sys.stderr)
+        return 1
+    atomic_write(brief_path(lit_dir, wid),
+                 json.dumps(brief, indent=2, ensure_ascii=False) + "\n")
+    print("brief written: {0} status={1} basis={2}".format(
+        wid, brief["status"], brief["basis"]))
+    return 0
+
+
+def verb_brief_restub(lit_dir, raw_id):
+    """Reset the agent shell and script-owned enrich fields of one brief to
+    the pending stub shape. The human block and an already-set
+    paper_captured_at are kept."""
+    aliases = load_aliases(lit_dir)
+    wid = resolve_alias(bare_wid(raw_id), aliases)
+    existing = load_brief(lit_dir, wid)
+    if existing is None:
+        print("error: no brief for {0}".format(wid), file=sys.stderr)
+        return 1
+    brief = new_brief(wid, existing.get("paper_captured_at"))
+    brief["human"] = existing.get("human") or empty_human_block()
+    atomic_write(brief_path(lit_dir, wid),
+                 json.dumps(brief, indent=2, ensure_ascii=False) + "\n")
+    print("brief restubbed: {0}".format(wid))
+    return 0
+
+
 VERB_FLAGS = ("doi", "openalex", "arxiv", "title", "ids", "inbox", "status", "check",
-              "enrich_pending", "brief_status", "brief_check")
+              "enrich_pending", "brief_status", "brief_check",
+              "brief_write", "brief_restub")
 
 
 def build_parser():
@@ -1270,6 +1356,14 @@ def build_parser():
                    help="brief counts by status and basis; optional W-id detail")
     p.add_argument("--brief-check", nargs="?", const="all", metavar="W-ID",
                    help="validate one brief or all; non-zero on invalid")
+    p.add_argument("--brief-write", action="store_true",
+                   help="write the brief for --id from the --file payload")
+    p.add_argument("--brief-restub", action="store_true",
+                   help="reset the --id brief agent shell to pending")
+    p.add_argument("--id", help="W-id target of --brief-write/--brief-restub")
+    p.add_argument("--file", help="brief payload JSON path for --brief-write")
+    p.add_argument("--human", action="store_true",
+                   help="--brief-write also replaces the human block from the payload")
     p.add_argument("--dir", default=".lit", help="corpus root (default .lit)")
     p.add_argument("--api-key", default=os.environ.get("OPENALEX_API_KEY"),
                    help="OpenAlex API key (default env OPENALEX_API_KEY)")
@@ -1290,7 +1384,8 @@ def pick_verb(args):
     if len(names) != 1:
         print("error: give exactly one of --doi/--openalex/--arxiv/--title/"
               "--ids/--inbox/--status/--check/--enrich-pending/"
-              "--brief-status/--brief-check", file=sys.stderr)
+              "--brief-status/--brief-check/--brief-write/--brief-restub",
+              file=sys.stderr)
         sys.exit(2)
     return names[0]
 
@@ -1307,6 +1402,13 @@ def validate_verb(args, verb):
             print("error: --openalex expects a W-id like W2741809807",
                   file=sys.stderr)
             sys.exit(2)
+    if verb in ("brief_write", "brief_restub"):
+        if not args.id or not WID_RE.match(bare_wid(args.id)):
+            print("error: --id expects a W-id like W2741809807", file=sys.stderr)
+            sys.exit(2)
+    if verb == "brief_write" and not args.file:
+        print("error: --brief-write needs --file <payload.json>", file=sys.stderr)
+        sys.exit(2)
 
 
 def main(argv=None):
@@ -1365,6 +1467,10 @@ def main(argv=None):
             return verb_brief_status(lit_dir, args.brief_status)
         elif verb == "brief_check":
             return verb_brief_check(lit_dir, args.brief_check)
+        elif verb == "brief_write":
+            return verb_brief_write(lit_dir, args.id, args.file, args.human)
+        elif verb == "brief_restub":
+            return verb_brief_restub(lit_dir, args.id)
     except BudgetExhausted:
         print(run.summary())
         print("budget exhausted; completed writes stand")
