@@ -394,6 +394,76 @@ def test_validate_brief_stub_and_ready():
     assert any("related_in_corpus" in p for p in lit_fetch.validate_brief(bad3))
 
 
+def test_ensure_brief_stub_and_no_clobber():
+    with tempfile.TemporaryDirectory() as tmp:
+        lit = pathlib.Path(tmp) / ".lit"
+        rec = lit_fetch.normalize_work(SAMPLE_PAYLOAD, seed=True, source="capture",
+                                       captured_at="2026-09-16T00:00:00Z")
+        lit_fetch.write_record(rec, lit)
+        assert lit_fetch.ensure_brief_stub(lit, "W1111111111") is True
+        brief = lit_fetch.load_brief(lit, "W1111111111")
+        assert brief["status"] == "pending" and brief["basis"] == "none"
+        assert brief["enriched_at"] is None and brief["enrichment_source"] is None
+        assert brief["paper_captured_at"] == "2026-09-16T00:00:00Z"
+        assert lit_fetch.validate_brief(brief) == []
+        # second ensure is a no-op and never clobbers
+        assert lit_fetch.ensure_brief_stub(lit, "W1111111111") is False
+        assert lit_fetch.load_brief(lit, "W1111111111") == brief
+
+
+def test_ensure_brief_stub_without_stamp():
+    with tempfile.TemporaryDirectory() as tmp:
+        lit = pathlib.Path(tmp) / ".lit"
+        lit_fetch.ensure_corpus(lit)
+        (lit / "papers" / "W1.json").write_text(
+            json.dumps({"id": "W1"}), encoding="utf-8")   # no captured_at
+        assert lit_fetch.ensure_brief_stub(lit, "W1") is True
+        assert lit_fetch.load_brief(lit, "W1")["paper_captured_at"] is None
+
+
+def test_first_write_makes_exactly_one_stub_and_refetch_keeps_brief():
+    with tempfile.TemporaryDirectory() as tmp:
+        lit = pathlib.Path(tmp) / ".lit"
+        with contextlib.redirect_stdout(io.StringIO()):
+            run = lit_fetch.Run()
+            lit_fetch.write_one(SAMPLE_PAYLOAD, lit, run, True, "capture")
+        assert run.written == 1 and run.failed == 0
+        briefs = list((lit / "briefs").glob("*.json"))
+        assert len(briefs) == 1 and briefs[0].stem == "W1111111111"
+        # the agent enriches the stub, then the paper is re-fetched (skip path)
+        brief = lit_fetch.load_brief(lit, "W1111111111")
+        brief["agent"] = agent_shell(overview="enriched")
+        write_brief_file(lit, "W1111111111", brief)
+        with contextlib.redirect_stdout(io.StringIO()):
+            run2 = lit_fetch.Run()
+            lit_fetch.write_one(SAMPLE_PAYLOAD, lit, run2, True, "capture")
+        assert run2.skipped == 1 and run2.written == 0
+        assert lit_fetch.load_brief(lit, "W1111111111")["agent"]["overview"] == "enriched"
+
+
+def test_stub_failure_surfaces():
+    with tempfile.TemporaryDirectory() as tmp:
+        lit = pathlib.Path(tmp) / ".lit"
+
+        def boom(lit_dir, wid):
+            raise OSError("briefs path unwritable")
+
+        prev = lit_fetch.ensure_brief_stub
+        lit_fetch.ensure_brief_stub = boom
+        err = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                with contextlib.redirect_stderr(err):
+                    run = lit_fetch.Run()
+                    lit_fetch.write_one(SAMPLE_PAYLOAD, lit, run, True, "capture")
+        finally:
+            lit_fetch.ensure_brief_stub = prev
+        assert run.written == 1            # paper write stands
+        assert run.failed == 1             # stub failure is a counted failure
+        assert run.failures[0][0] == "brief-stub:W1111111111"
+        assert "brief_stub_failed" in err.getvalue()
+
+
 def test_render_index():
     text = lit_fetch.render_index(3, 10, 5, 1, "2026-09-16T00:00:00Z")
     assert "| 3 |" in text and "| 10 |" in text and "| 5 |" in text and "| 1 |" in text
@@ -415,6 +485,7 @@ def test_atomic_write_and_corpus_init():
         assert (lit / "papers").is_dir()
         assert (lit / "graph").is_dir()
         assert (lit / "findings").is_dir()
+        assert (lit / "briefs").is_dir()
         lit_fetch.atomic_write(lit / "graph" / "edges.jsonl", "x\n")
         assert (lit / "graph" / "edges.jsonl").read_text(encoding="utf-8") == "x\n"
         assert not list(lit.rglob("*.tmp"))
@@ -952,6 +1023,10 @@ CHECKS = [
     test_validate_claim_rejects,
     test_validate_claim_lists_union,
     test_validate_brief_stub_and_ready,
+    test_ensure_brief_stub_and_no_clobber,
+    test_ensure_brief_stub_without_stamp,
+    test_first_write_makes_exactly_one_stub_and_refetch_keeps_brief,
+    test_stub_failure_surfaces,
 ]
 
 

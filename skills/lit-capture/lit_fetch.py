@@ -565,7 +565,7 @@ def atomic_write(path, text):
 
 def ensure_corpus(lit_dir):
     """Create the corpus directory tree on first use in a fresh --dir."""
-    for sub in ("papers", "graph", "findings"):
+    for sub in ("papers", "briefs", "graph", "findings"):
         (Path(lit_dir) / sub).mkdir(parents=True, exist_ok=True)
 
 
@@ -601,7 +601,9 @@ def write_one(payload, lit_dir, run, seed, source):
     The canonical id is only knowable after the fetch, so the skip happens
     here. An existing canonical record is never rewritten: its seed and
     captured_at stay untouched, and the run counts it as skipped.
-    Returns (record, wrote)."""
+    Returns (record, wrote). The first successful paper write also creates
+    the pending brief stub; a stub failure is surfaced as brief_stub_failed
+    and counted as a run failure (never silent), while the paper write stands."""
     record = normalize_work(payload, seed=seed, source=source)
     path = Path(lit_dir) / "papers" / (record["id"] + ".json")
     if path.exists():
@@ -609,6 +611,13 @@ def write_one(payload, lit_dir, run, seed, source):
         return record, False
     write_record(record, lit_dir)
     run.written += 1
+    try:
+        ensure_brief_stub(lit_dir, record["id"])
+    except Exception as exc:
+        print("brief_stub_failed: {0}: {1}".format(
+            record["id"], str(exc) or exc.__class__.__name__), file=sys.stderr)
+        run.fail("brief-stub:" + record["id"],
+                 str(exc) or exc.__class__.__name__)
     return record, True
 
 
@@ -678,6 +687,45 @@ def regenerate_index(lit_dir):
                         len(boundary_nodes(lit_dir)), count_inbox(lit_dir),
                         now_iso())
     atomic_write(Path(lit_dir) / "SKILL.md", text)
+
+
+# ---------------------------------------------------------------------------
+# brief sidecar IO (.lit/briefs/<W-id>.json)
+# ---------------------------------------------------------------------------
+
+def briefs_dir(lit_dir):
+    return Path(lit_dir) / "briefs"
+
+
+def brief_path(lit_dir, wid):
+    return briefs_dir(lit_dir) / (wid + ".json")
+
+
+def load_brief(lit_dir, wid):
+    """The stored brief, or None when absent. Raises on corrupt JSON so
+    callers fail loudly instead of silently dropping a brief."""
+    p = brief_path(lit_dir, wid)
+    if not p.exists():
+        return None
+    return json.loads(p.read_text(encoding="utf-8"))
+
+
+def ensure_brief_stub(lit_dir, wid):
+    """Create the pending stub when the brief file is missing; leave any
+    existing brief untouched. wid must already be the canonical id.
+    paper_captured_at is copied from the paper's capture stamp when the paper
+    record exists and carries one. Returns True when a stub was created."""
+    p = brief_path(lit_dir, wid)
+    if p.exists():
+        return False
+    paper_p = Path(lit_dir) / "papers" / (wid + ".json")
+    captured = None
+    if paper_p.exists():
+        captured = paper_capture_stamp(
+            json.loads(paper_p.read_text(encoding="utf-8")))
+    atomic_write(p, json.dumps(new_brief(wid, captured),
+                               indent=2, ensure_ascii=False) + "\n")
+    return True
 
 
 # ---------------------------------------------------------------------------
