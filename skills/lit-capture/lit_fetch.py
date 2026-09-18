@@ -357,6 +357,129 @@ def derive_status(agent, union_ids):
     return "partial"
 
 
+class BriefValidationError(Exception):
+    """--brief-write rejects the payload before any file is written."""
+
+
+def validate_claim(claim, where):
+    """Schema-validate one claim object. id / text / type / confidence / basis
+    are required (text may be "" and simply counts as absent for derivation;
+    id must be non-empty). Optional: support, page, section, supports,
+    contradicts."""
+    if not isinstance(claim, dict):
+        raise BriefValidationError(where + ": claim is not an object")
+    for field in CLAIM_REQUIRED:
+        if field not in claim:
+            raise BriefValidationError(where + ": missing required field " + field)
+    if not isinstance(claim["id"], str) or not claim["id"].strip():
+        raise BriefValidationError(where + ": id must be a non-empty string")
+    if not isinstance(claim["text"], str):
+        raise BriefValidationError(where + ": text must be a string")
+    if claim["type"] not in CLAIM_TYPES:
+        raise BriefValidationError(where + ": illegal type " + repr(claim["type"]))
+    if claim["confidence"] not in CLAIM_CONFIDENCE:
+        raise BriefValidationError(where + ": illegal confidence "
+                                   + repr(claim["confidence"]))
+    if claim["basis"] not in CLAIM_BASIS:
+        raise BriefValidationError(where + ": illegal basis " + repr(claim["basis"]))
+    for field in ("support", "page", "section"):
+        if field in claim and claim[field] is not None and not isinstance(claim[field], str):
+            raise BriefValidationError(where + ": " + field + " must be a string or null")
+    for field in ("supports", "contradicts"):
+        if field in claim and not isinstance(claim[field], list):
+            raise BriefValidationError(where + ": " + field + " must be an array")
+
+
+def validate_claim_lists(agent, human):
+    """Schema-validate every claim in both lists, then enforce claim-id
+    uniqueness and supports / contradicts target existence over the union.
+    Returns the union id set. Raises BriefValidationError."""
+    ids = []
+    for where, block in (("agent", agent), ("human", human)):
+        claims = (block or {}).get("claims") or []
+        if not isinstance(claims, list):
+            raise BriefValidationError(where + ".claims must be an array")
+        for i, c in enumerate(claims):
+            validate_claim(c, "{0}.claims[{1}]".format(where, i))
+            ids.append(c["id"])
+    union = set(ids)
+    if len(union) != len(ids):
+        raise BriefValidationError(
+            "duplicate claim ids across agent+human claims")
+    for where, block in (("agent", agent), ("human", human)):
+        for i, c in enumerate((block or {}).get("claims") or []):
+            for field in ("supports", "contradicts"):
+                for t in c.get(field) or []:
+                    if t not in union:
+                        raise BriefValidationError(
+                            "{0}.claims[{1}].{2}: target {3} not in the "
+                            "claim union".format(where, i, field, t))
+    return union
+
+
+def validate_brief(brief):
+    """Structural validation of one stored brief. Returns a list of problem
+    strings; empty means valid. Also re-derives basis and status so a
+    hand-edited file cannot claim a status its content does not support."""
+    problems = []
+    if not isinstance(brief, dict):
+        return ["brief is not an object"]
+    if brief.get("schema_version") != BRIEF_SCHEMA_VERSION:
+        problems.append("schema_version must be " + str(BRIEF_SCHEMA_VERSION))
+    if brief.get("status") not in BRIEF_STATUS:
+        problems.append("illegal status " + repr(brief.get("status")))
+    if brief.get("basis") not in BRIEF_BASIS:
+        problems.append("illegal basis " + repr(brief.get("basis")))
+    for field in ("enriched_at", "enrichment_source", "paper_captured_at"):
+        if brief.get(field) is not None and not isinstance(brief[field], str):
+            problems.append(field + " must be a string or null")
+    if brief.get("enrichment_source") not in ("agent", "mixed", None):
+        problems.append("enrichment_source must be agent, mixed, or null")
+    agent = brief.get("agent")
+    human = brief.get("human")
+    if not isinstance(agent, dict):
+        problems.append("agent must be an object")
+        agent = {}
+    if not isinstance(human, dict):
+        problems.append("human must be an object")
+        human = {}
+    ids = set()
+    try:
+        ids = validate_claim_lists(agent, human)
+    except BriefValidationError as exc:
+        problems.append(str(exc))
+    for where, block, allow_none in (("agent", agent, False), ("human", human, True)):
+        for field in AGENT_TEXT_FIELDS:
+            value = block.get(field)
+            if value is None:
+                if not allow_none:
+                    problems.append(where + "." + field + " must be a string")
+            elif not isinstance(value, str):
+                problems.append(where + "." + field + " must be a string")
+        questions = block.get("open_questions")
+        if questions is not None and (not isinstance(questions, list)
+                                      or any(not isinstance(q, str) for q in questions)):
+            problems.append(where + ".open_questions must be an array of strings")
+    related = agent.get("related_in_corpus")
+    if related is not None and not isinstance(related, list):
+        problems.append("agent.related_in_corpus must be an array")
+    elif isinstance(related, list):
+        for i, r in enumerate(related):
+            if (not isinstance(r, dict) or not present_str(r.get("id"))
+                    or not WID_RE.match(str(r.get("id")))):
+                problems.append("agent.related_in_corpus[{0}] needs an object "
+                                "with a W-id".format(i))
+            elif r.get("note") is not None and not isinstance(r.get("note"), str):
+                problems.append("agent.related_in_corpus[{0}].note must be a "
+                                "string".format(i))
+    if not problems:
+        if derive_basis(agent) != brief.get("basis"):
+            problems.append("basis does not match derive_basis")
+        if derive_status(agent, ids) != brief.get("status"):
+            problems.append("status does not match derive_status")
+    return problems
+
+
 INDEX_TEMPLATE = r"""> Generated by lit_fetch.py. Do not edit; the next capture regenerates this file.
 
 # Literature corpus (`.lit/`)

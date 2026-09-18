@@ -242,6 +242,11 @@ def claim(cid, text="claim text", **over):
     return c
 
 
+def empty_human():
+    """Alias so the test reads like the spec block name."""
+    return lit_fetch.empty_human_block()
+
+
 def write_brief_file(lit, wid, brief):
     """Atomically write one brief JSON file into lit/briefs/."""
     lit_fetch.atomic_write(lit / "briefs" / (wid + ".json"),
@@ -321,6 +326,72 @@ def test_ready_content_union_targets():
     assert lit_fetch.ready_content(full, {"c1", "h1"})
     assert not lit_fetch.ready_content(full, {"c1"})   # dangling target blocks ready
     assert not lit_fetch.ready_content(agent_shell(overview="o"), {"c1"})
+
+
+def test_validate_claim_rejects():
+    lit_fetch.validate_claim(claim("c1"), "agent")   # no raise
+    mutations = (
+        lambda c: c.pop("id"),
+        lambda c: c.pop("text"),
+        lambda c: c.pop("type"),
+        lambda c: c.pop("confidence"),
+        lambda c: c.pop("basis"),
+        lambda c: c.update(type="wrong"),
+        lambda c: c.update(confidence="certain"),
+        lambda c: c.update(basis="vibes"),
+        lambda c: c.update(id=""),
+        lambda c: c.update(text=5),
+        lambda c: c.update(supports="c2"),
+    )
+    for mutate in mutations:
+        bad = claim("c1")
+        mutate(bad)
+        try:
+            lit_fetch.validate_claim(bad, "agent")
+            raise AssertionError("expected BriefValidationError")
+        except lit_fetch.BriefValidationError:
+            pass
+
+
+def test_validate_claim_lists_union():
+    a = agent_shell(claims=[claim("c1"), claim("c2", supports=["c1"])])
+    h = dict(empty_human(), claims=[claim("h1", basis="human")])
+    assert lit_fetch.validate_claim_lists(a, h) == {"c1", "c2", "h1"}
+    dup_h = dict(h, claims=[claim("c1", basis="human")])
+    try:
+        lit_fetch.validate_claim_lists(agent_shell(claims=[claim("c1")]), dup_h)
+        raise AssertionError("expected BriefValidationError")
+    except lit_fetch.BriefValidationError as e:
+        assert "duplicate" in str(e)
+    dang = agent_shell(claims=[claim("c1", contradicts=["ghost"])])
+    try:
+        lit_fetch.validate_claim_lists(dang, h)
+        raise AssertionError("expected BriefValidationError")
+    except lit_fetch.BriefValidationError as e:
+        assert "ghost" in str(e)
+
+
+def test_validate_brief_stub_and_ready():
+    stub = lit_fetch.new_brief("W1")
+    assert lit_fetch.validate_brief(stub) == []
+    full = lit_fetch.new_brief("W1")
+    full["agent"] = agent_shell(overview="o", methods_tests="m", limits="l",
+                                why_it_matters="w",
+                                claims=[claim("c1"), claim("c2")])
+    full["status"] = "ready"
+    full["basis"] = "abstract"
+    full["enriched_at"] = "2026-09-18T00:00:00Z"
+    full["enrichment_source"] = "agent"
+    assert lit_fetch.validate_brief(full) == []
+    bad = lit_fetch.new_brief("W1")
+    bad["status"] = "ready"          # a stub derives pending; stored value lies
+    assert any("status" in p for p in lit_fetch.validate_brief(bad))
+    bad2 = lit_fetch.new_brief("W1")
+    bad2["enrichment_source"] = "human"   # reserved value, never assigned in v1
+    assert any("enrichment_source" in p for p in lit_fetch.validate_brief(bad2))
+    bad3 = lit_fetch.new_brief("W1")
+    bad3["agent"]["related_in_corpus"] = [{"id": "c1", "note": "claim id, not a paper"}]
+    assert any("related_in_corpus" in p for p in lit_fetch.validate_brief(bad3))
 
 
 def test_render_index():
@@ -878,6 +949,9 @@ CHECKS = [
     test_derive_basis,
     test_derive_status,
     test_ready_content_union_targets,
+    test_validate_claim_rejects,
+    test_validate_claim_lists_union,
+    test_validate_brief_stub_and_ready,
 ]
 
 
