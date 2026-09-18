@@ -10,6 +10,7 @@ network installs a fake via lit_fetch.http_get.
 import contextlib
 import io
 import json
+import os
 import pathlib
 import sys
 import tempfile
@@ -462,6 +463,102 @@ def test_stub_failure_surfaces():
         assert run.failed == 1             # stub failure is a counted failure
         assert run.failures[0][0] == "brief-stub:W1111111111"
         assert "brief_stub_failed" in err.getvalue()
+
+
+def test_remap_brief_moves_and_merges():
+    with tempfile.TemporaryDirectory() as tmp:
+        lit = pathlib.Path(tmp) / ".lit"
+        lit_fetch.ensure_corpus(lit)
+        # case 1: only the old brief exists -> moves to the new id
+        old = lit_fetch.new_brief("W9999999999")
+        old["agent"] = agent_shell(overview="old notes")
+        write_brief_file(lit, "W9999999999", old)
+        lit_fetch.remap_brief(lit, "W9999999999", "W1111111111")
+        assert not (lit / "briefs" / "W9999999999.json").exists()
+        moved = lit_fetch.load_brief(lit, "W1111111111")
+        assert moved["id"] == "W1111111111"
+        assert moved["agent"]["overview"] == "old notes"
+        # case 2: both exist -> newer mtime agent wins; empty human slots fill from loser
+        winner = lit_fetch.new_brief("W1111111111")
+        winner["agent"] = agent_shell(overview="newer agent")
+        winner["human"]["notes"] = "winner notes"  # conflict keeps winner's notes
+        write_brief_file(lit, "W1111111111", winner)
+        loser = lit_fetch.new_brief("W9999999999")
+        loser["human"]["overview"] = "human note to keep"
+        loser["human"]["notes"] = "conflicting human note"
+        write_brief_file(lit, "W9999999999", loser)
+        # make loser older so winner's mtime is newer
+        os.utime(lit / "briefs" / "W9999999999.json", (1000000000, 1000000000))
+        lit_fetch.remap_brief(lit, "W9999999999", "W1111111111")
+        assert not (lit / "briefs" / "W9999999999.json").exists()
+        merged = lit_fetch.load_brief(lit, "W1111111111")
+        assert merged["agent"]["overview"] == "newer agent"   # newer mtime wins
+        assert merged["human"]["overview"] == "human note to keep"  # filled from loser
+        assert merged["human"]["notes"] == "winner notes"     # conflict keeps winner
+
+
+def test_remap_brief_noop_when_old_missing():
+    with tempfile.TemporaryDirectory() as tmp:
+        lit = pathlib.Path(tmp) / ".lit"
+        lit_fetch.ensure_corpus(lit)
+        lit_fetch.remap_brief(lit, "W8888888888", "W1111111111")   # no raise
+        assert lit_fetch.load_brief(lit, "W1111111111") is None
+
+
+def test_capture_merge_remaps_brief():
+    with tempfile.TemporaryDirectory() as tmp:
+        lit = pathlib.Path(tmp) / ".lit"
+        lit_fetch.ensure_corpus(lit)
+        stale = lit_fetch.new_brief("W9999999999")
+        stale["agent"] = agent_shell(overview="pre-merge agent")
+        write_brief_file(lit, "W9999999999", stale)
+
+        def handler(url):
+            assert "/works/W9999999999?" in url
+            return (200, {"x-ratelimit-remaining": "9999"},
+                    json.dumps(SAMPLE_PAYLOAD))   # canonical W1111111111
+
+        with fake_http(handler):
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                run = lit_fetch.Run()
+                lit_fetch.capture_identifier("W9999999999", True, lit, None, run)
+        assert "merge: W9999999999 -> W1111111111" in out.getvalue()
+        assert run.failed == 0
+        assert not (lit / "briefs" / "W9999999999.json").exists()
+        brief = lit_fetch.load_brief(lit, "W1111111111")
+        assert brief["agent"]["overview"] == "pre-merge agent"   # moved, not clobbered
+        assert lit_fetch.load_aliases(lit) == {"W9999999999": "W1111111111"}
+        # Deferred to Task 6 (verb_brief_write does not exist yet); uncomment
+        # when Task 6 lands:
+        # # operations via the old id resolve onto the single canonical file
+        # payload = {"agent": agent_shell(overview="written via old id")}
+        # with contextlib.redirect_stdout(io.StringIO()):
+        #     assert lit_fetch.verb_brief_write(
+        #         lit, "W9999999999", write_payload(tmp, payload), False) == 0
+        # assert not (lit / "briefs" / "W9999999999.json").exists()
+        # assert lit_fetch.load_brief(
+        #     lit, "W1111111111")["agent"]["overview"] == "written via old id"
+
+
+def test_batch_merge_remaps_brief():
+    with tempfile.TemporaryDirectory() as tmp:
+        lit = pathlib.Path(tmp) / ".lit"
+        lit_fetch.ensure_corpus(lit)
+        stale = lit_fetch.new_brief("W9999999999")
+        stale["human"]["notes"] = "keep me"
+        write_brief_file(lit, "W9999999999", stale)
+
+        def handler(url):
+            return (200, {"x-ratelimit-remaining": "9"}, envelope([SAMPLE_PAYLOAD]))
+
+        with fake_http(handler):
+            with contextlib.redirect_stdout(io.StringIO()):
+                run = lit_fetch.Run()
+                lit_fetch.verb_ids("W9999999999", lit, None, False, run)
+        assert run.written == 1 and run.failed == 0
+        assert not (lit / "briefs" / "W9999999999.json").exists()
+        assert lit_fetch.load_brief(lit, "W1111111111")["human"]["notes"] == "keep me"
 
 
 def test_render_index():
@@ -1027,6 +1124,10 @@ CHECKS = [
     test_ensure_brief_stub_without_stamp,
     test_first_write_makes_exactly_one_stub_and_refetch_keeps_brief,
     test_stub_failure_surfaces,
+    test_remap_brief_moves_and_merges,
+    test_remap_brief_noop_when_old_missing,
+    test_capture_merge_remaps_brief,
+    test_batch_merge_remaps_brief,
 ]
 
 

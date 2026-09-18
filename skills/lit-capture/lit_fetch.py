@@ -647,6 +647,42 @@ def save_aliases(lit_dir, aliases):
                  json.dumps(aliases, indent=2, sort_keys=True) + "\n")
 
 
+def remap_brief(lit_dir, old, new):
+    """Move the brief sidecar when a paper id merges old -> new.
+
+    Missing old brief: nothing to do. Missing new brief: write the old brief
+    under the new id and delete the old file. Both present: the newer-mtime
+    file's agent block wins, and non-empty human fields from the other file
+    fill empty slots of the winner's human block (never drop non-empty human;
+    an exact conflict keeps the newer). The old file is removed either way.
+    paper_captured_at is refreshed from the paper record when it exists."""
+    old_p, new_p = brief_path(lit_dir, old), brief_path(lit_dir, new)
+    if not old_p.exists():
+        return
+    old_b = load_brief(lit_dir, old)
+    new_b = load_brief(lit_dir, new)
+    if new_b is None:
+        winner = old_b
+    else:
+        winner, loser = ((old_b, new_b)
+                         if old_p.stat().st_mtime >= new_p.stat().st_mtime
+                         else (new_b, old_b))
+        human = dict(winner.get("human") or empty_human_block())
+        for key, value in (loser.get("human") or {}).items():
+            if value in (None, "", []) or human.get(key) not in (None, "", []):
+                continue
+            human[key] = value
+        winner = dict(winner)
+        winner["human"] = human
+    paper_p = Path(lit_dir) / "papers" / (new + ".json")
+    if paper_p.exists():
+        winner["paper_captured_at"] = paper_capture_stamp(
+            json.loads(paper_p.read_text(encoding="utf-8")))
+    winner["id"] = new
+    atomic_write(new_p, json.dumps(winner, indent=2, ensure_ascii=False) + "\n")
+    old_p.unlink()
+
+
 def write_edges(lit_dir, new_edges):
     """Union new edges into edges.jsonl, healing as we go: existing and new
     endpoints are both remapped through the full alias table before the union,
@@ -862,6 +898,11 @@ def capture_identifier(identifier, is_wid_form, lit_dir, api_key, run):
         aliases[requested] = canonical
         save_aliases(lit_dir, aliases)
         print("merge: {0} -> {1}".format(requested, canonical))
+        try:
+            remap_brief(lit_dir, requested, canonical)
+        except Exception as exc:
+            run.fail("brief-remap:" + requested,
+                     str(exc) or exc.__class__.__name__)
     return promote_payload(payload, lit_dir, run, seed=True, source="capture")
 
 
@@ -942,6 +983,11 @@ def verb_ids(raw_ids, lit_dir, api_key, seed_flag, run):
                 aliases[wid] = canonical
                 save_aliases(lit_dir, aliases)
                 print("merge: {0} -> {1}".format(wid, canonical))
+                try:
+                    remap_brief(lit_dir, wid, canonical)
+                except Exception as exc:
+                    run.fail("brief-remap:" + wid,
+                             str(exc) or exc.__class__.__name__)
             record, wrote = write_one(payload, lit_dir, run,
                                       seed=seed_flag, source="fetch")
             records.append(record)
