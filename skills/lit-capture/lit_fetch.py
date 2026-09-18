@@ -232,6 +232,131 @@ def remap_edges(edges, aliases):
             for e in edges]
 
 
+# ---------------------------------------------------------------------------
+# pure corpus logic: analysis briefs (sidecar .lit/briefs/<W-id>.json)
+# ---------------------------------------------------------------------------
+
+BRIEF_SCHEMA_VERSION = 1
+BRIEF_STATUS = ("pending", "partial", "ready", "stale")   # stale reserved, v1 never writes it
+BRIEF_BASIS = ("none", "abstract", "fulltext", "mixed")
+CLAIM_TYPES = ("contribution", "finding", "method", "limit", "assumption", "other")
+CLAIM_BASIS = ("abstract", "fulltext", "human")
+CLAIM_CONFIDENCE = ("low", "med", "high")
+CLAIM_REQUIRED = ("id", "text", "type", "confidence", "basis")
+AGENT_TEXT_FIELDS = ("overview", "methods_tests", "limits", "why_it_matters", "notes")
+
+
+def present_str(value):
+    """A string field is present when non-null with stripped length > 0."""
+    return isinstance(value, str) and bool(value.strip())
+
+
+def present_claims(claims):
+    """A claims array is present when at least one claim has present text."""
+    return any(isinstance(c, dict) and present_str(c.get("text"))
+               for c in claims or [])
+
+
+def empty_agent_block():
+    """Agent-owned fields; the agent block is fully replaced on re-enrich."""
+    return {"overview": "", "claims": [], "methods_tests": "", "limits": "",
+            "why_it_matters": "", "related_in_corpus": [], "open_questions": [],
+            "notes": ""}
+
+
+def empty_human_block():
+    """Human-owned fields; merge-only. null means "not dictated by the user"."""
+    return {"overview": None, "claims": [], "methods_tests": None, "limits": None,
+            "why_it_matters": None, "open_questions": [], "notes": None}
+
+
+def new_brief(wid, paper_captured_at=None):
+    """The stub shape: pending, no stamps, empty shells. No placeholder claims."""
+    return {"id": wid,
+            "schema_version": BRIEF_SCHEMA_VERSION,
+            "status": "pending",
+            "basis": "none",
+            "enriched_at": None,
+            "enrichment_source": None,
+            "paper_captured_at": paper_captured_at,
+            "agent": empty_agent_block(),
+            "human": empty_human_block()}
+
+
+def paper_capture_stamp(paper):
+    """The paper record's capture stamp (captured_at), or None."""
+    if not isinstance(paper, dict):
+        return None
+    stamp = paper.get("captured_at")
+    return stamp if isinstance(stamp, str) and stamp.strip() else None
+
+
+def derive_basis(agent):
+    """Top-level basis from agent.claims basis values only (human claims never
+    move it). No claims with present text -> none; all-abstract -> abstract;
+    all-fulltext -> fulltext; any other combination (including human-only,
+    which is unexpected) -> mixed."""
+    bases = [c.get("basis") for c in (agent or {}).get("claims") or []
+             if isinstance(c, dict) and present_str(c.get("text"))]
+    if not bases:
+        return "none"
+    if set(bases) == {"abstract"}:
+        return "abstract"
+    if set(bases) == {"fulltext"}:
+        return "fulltext"
+    return "mixed"
+
+
+def nonempty_agent(agent):
+    """Any agent-authored content at all (spec: pending vs partial gate)."""
+    a = agent or {}
+    return bool(present_str(a.get("overview"))
+                or present_str(a.get("methods_tests"))
+                or present_str(a.get("limits"))
+                or present_str(a.get("why_it_matters"))
+                or present_str(a.get("notes"))
+                or (a.get("open_questions") or [])
+                or (a.get("related_in_corpus") or [])
+                or present_claims(a.get("claims")))
+
+
+def ready_content(agent, union_ids):
+    """Ready predicate on the agent block: overview, at least one claim with
+    present text, methods_tests / limits / why_it_matters present, every such
+    claim carrying allowed type / confidence / basis enums, and every
+    supports / contradicts target existing in the agent+human claim-id union."""
+    a = agent or {}
+    if not present_str(a.get("overview")):
+        return False
+    claims = [c for c in a.get("claims") or []
+              if isinstance(c, dict) and present_str(c.get("text"))]
+    if not claims:
+        return False
+    for field in ("methods_tests", "limits", "why_it_matters"):
+        if not present_str(a.get(field)):
+            return False
+    for c in claims:
+        if c.get("type") not in CLAIM_TYPES:
+            return False
+        if c.get("confidence") not in CLAIM_CONFIDENCE:
+            return False
+        if c.get("basis") not in CLAIM_BASIS:
+            return False
+        for t in (c.get("supports") or []) + (c.get("contradicts") or []):
+            if t not in union_ids:
+                return False
+    return True
+
+
+def derive_status(agent, union_ids):
+    """Closed function; stored status is ignored. pending -> ready -> partial."""
+    if not nonempty_agent(agent):
+        return "pending"
+    if ready_content(agent, union_ids):
+        return "ready"
+    return "partial"
+
+
 INDEX_TEMPLATE = r"""> Generated by lit_fetch.py. Do not edit; the next capture regenerates this file.
 
 # Literature corpus (`.lit/`)

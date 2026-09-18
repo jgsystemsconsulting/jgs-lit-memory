@@ -222,6 +222,107 @@ def test_remap_edges():
     ]
 
 
+# ---------------------------------------------------------------------------
+# checks: briefs (schema, derivation, IO, verbs)
+# ---------------------------------------------------------------------------
+
+def agent_shell(**over):
+    """Empty agent block with optional field overrides."""
+    agent = lit_fetch.empty_agent_block()
+    agent.update(over)
+    return agent
+
+
+def claim(cid, text="claim text", **over):
+    """One valid claim object with overrides."""
+    c = {"id": cid, "text": text, "type": "finding", "support": None,
+         "basis": "abstract", "confidence": "med", "page": None,
+         "section": None, "supports": [], "contradicts": []}
+    c.update(over)
+    return c
+
+
+def write_brief_file(lit, wid, brief):
+    """Atomically write one brief JSON file into lit/briefs/."""
+    lit_fetch.atomic_write(lit / "briefs" / (wid + ".json"),
+                           json.dumps(brief, indent=2, ensure_ascii=False) + "\n")
+
+
+def write_payload(tmp, payload):
+    """Write a brief payload JSON file; returns its path as str."""
+    p = pathlib.Path(tmp) / "payload.json"
+    p.write_text(json.dumps(payload), encoding="utf-8")
+    return str(p)
+
+
+def test_present_rules():
+    assert lit_fetch.present_str("x") and lit_fetch.present_str(" x ")
+    assert not lit_fetch.present_str("")
+    assert not lit_fetch.present_str(None)
+    assert not lit_fetch.present_str(5)
+    assert lit_fetch.present_claims([claim("c1")])
+    assert not lit_fetch.present_claims([claim("c1", text="")])
+    assert not lit_fetch.present_claims([])
+    assert not lit_fetch.present_claims(None)
+
+
+def test_new_brief_shape():
+    b = lit_fetch.new_brief("W1", "2026-09-16T00:00:00Z")
+    assert b["id"] == "W1" and b["schema_version"] == 1
+    assert b["status"] == "pending" and b["basis"] == "none"
+    assert b["enriched_at"] is None and b["enrichment_source"] is None
+    assert b["paper_captured_at"] == "2026-09-16T00:00:00Z"
+    assert b["agent"] == lit_fetch.empty_agent_block()
+    assert b["human"] == lit_fetch.empty_human_block()
+    assert lit_fetch.new_brief("W1")["paper_captured_at"] is None
+
+
+def test_paper_capture_stamp():
+    assert lit_fetch.paper_capture_stamp(
+        {"captured_at": "2026-09-16T00:00:00Z"}) == "2026-09-16T00:00:00Z"
+    assert lit_fetch.paper_capture_stamp({}) is None
+    assert lit_fetch.paper_capture_stamp({"captured_at": ""}) is None
+    assert lit_fetch.paper_capture_stamp({"captured_at": None}) is None
+    assert lit_fetch.paper_capture_stamp(None) is None
+
+
+def test_derive_basis():
+    A = agent_shell
+    assert lit_fetch.derive_basis(A()) == "none"
+    assert lit_fetch.derive_basis(A(claims=[claim("c1", text="")])) == "none"
+    assert lit_fetch.derive_basis(A(claims=[claim("c1", basis="abstract")])) == "abstract"
+    assert lit_fetch.derive_basis(A(claims=[claim("c1", basis="fulltext"),
+                                            claim("c2", basis="fulltext")])) == "fulltext"
+    assert lit_fetch.derive_basis(A(claims=[claim("c1", basis="abstract"),
+                                            claim("c2", basis="fulltext")])) == "mixed"
+    assert lit_fetch.derive_basis(A(claims=[claim("c1", basis="human"),
+                                            claim("c2", basis="abstract")])) == "mixed"
+    assert lit_fetch.derive_basis(A(claims=[claim("c1", basis="human")])) == "mixed"
+
+
+def test_derive_status():
+    A = agent_shell
+    ids = {"c1", "c2"}
+    assert lit_fetch.derive_status(A(), ids) == "pending"
+    assert lit_fetch.derive_status(A(notes="a note"), ids) == "partial"
+    full = A(overview="o", methods_tests="m", limits="l", why_it_matters="w",
+             claims=[claim("c1"), claim("c2")])
+    assert lit_fetch.derive_status(full, ids) == "ready"
+    # thin fulltext fill that fails ready: partial, basis still fulltext
+    thin = A(overview="o", claims=[claim("c1", basis="fulltext")])
+    assert lit_fetch.derive_status(thin, {"c1"}) == "partial"
+    assert lit_fetch.derive_basis(thin) == "fulltext"
+
+
+def test_ready_content_union_targets():
+    full = agent_shell(overview="o", methods_tests="m", limits="l",
+                       why_it_matters="w",
+                       claims=[claim("c1", supports=["h1"])])
+    assert lit_fetch.ready_content(full, {"c1", "h1"})
+    assert not lit_fetch.ready_content(full, {"c1"})   # dangling target blocks ready
+    assert not lit_fetch.ready_content(agent_shell(overview="o"), {"c1"})
+
+
 def test_render_index():
     text = lit_fetch.render_index(3, 10, 5, 1, "2026-09-16T00:00:00Z")
     assert "| 3 |" in text and "| 10 |" in text and "| 5 |" in text and "| 1 |" in text
@@ -771,6 +872,12 @@ CHECKS = [
     test_inbox_triage_flow,
     test_status_never_before_index,
     test_check_forms_fake,
+    test_present_rules,
+    test_new_brief_shape,
+    test_paper_capture_stamp,
+    test_derive_basis,
+    test_derive_status,
+    test_ready_content_union_targets,
 ]
 
 
