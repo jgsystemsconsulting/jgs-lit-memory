@@ -1143,7 +1143,111 @@ def verb_check(api_key):
     return 0 if ok else 1
 
 
-VERB_FLAGS = ("doi", "openalex", "arxiv", "title", "ids", "inbox", "status", "check")
+def _read_brief_json(path):
+    """Parsed brief JSON from a path, or None when unreadable or malformed."""
+    try:
+        brief = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError, OSError):
+        return None
+    return brief if isinstance(brief, dict) else None
+
+
+def verb_enrich_pending(lit_dir):
+    """List briefs awaiting enrichment as JSONL, one object per line:
+    {"id", "status", "basis"} for pending and partial; unreadable or malformed
+    files print {"id", "status": "invalid", "basis": null} (list label only).
+    ready and stale rows are skipped. Read-only; empty corpus exits 0."""
+    d = briefs_dir(lit_dir)
+    if not d.is_dir():
+        return 0
+    aliases = load_aliases(lit_dir)
+    for p in sorted(d.glob("*.json")):
+        wid = resolve_alias(p.stem, aliases)
+        brief = _read_brief_json(p)
+        status = brief.get("status") if brief else None
+        if status in ("pending", "partial"):
+            print(json.dumps({"id": wid, "status": status,
+                              "basis": brief.get("basis")}))
+        elif status not in BRIEF_STATUS:
+            print(json.dumps({"id": wid, "status": "invalid", "basis": None}))
+    return 0
+
+
+def verb_brief_status(lit_dir, wid):
+    """Brief counts by status and basis; with a W-id, print that brief's JSON.
+    Read-only."""
+    aliases = load_aliases(lit_dir)
+    if wid and wid != "all":
+        canonical = resolve_alias(bare_wid(wid), aliases)
+        brief = load_brief(lit_dir, canonical)
+        if brief is None:
+            print("error: no brief for {0}".format(canonical), file=sys.stderr)
+            return 1
+        print(json.dumps(brief, indent=2, ensure_ascii=False))
+        return 0
+    d = briefs_dir(lit_dir)
+    status_counts, basis_counts, total = {}, {}, 0
+    if d.is_dir():
+        for p in sorted(d.glob("*.json")):
+            total += 1
+            brief = _read_brief_json(p)
+            status = brief.get("status") if brief else None
+            basis = brief.get("basis") if brief else None
+            if status not in BRIEF_STATUS:
+                status = "invalid"
+            if basis not in BRIEF_BASIS:
+                basis = "invalid"
+            status_counts[status] = status_counts.get(status, 0) + 1
+            basis_counts[basis] = basis_counts.get(basis, 0) + 1
+    print("briefs=" + str(total))
+    for key in BRIEF_STATUS + ("invalid",):
+        print("status {0}={1}".format(key, status_counts.get(key, 0)))
+    for key in BRIEF_BASIS + ("invalid",):
+        print("basis {0}={1}".format(key, basis_counts.get(key, 0)))
+    return 0
+
+
+def _check_brief_file(path, label):
+    """Print OK/FAIL for one brief file; True when valid."""
+    brief = _read_brief_json(path)
+    if brief is None:
+        try:
+            json.loads(path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            print("FAIL {0}: unreadable ({1})".format(label, exc))
+            return False
+        print("FAIL {0}: brief is not an object".format(label))
+        return False
+    problems = validate_brief(brief)
+    for problem in problems:
+        print("FAIL {0}: {1}".format(label, problem))
+    if not problems:
+        print("OK " + str(label))
+    return not problems
+
+
+def verb_brief_check(lit_dir, wid):
+    """Validate one brief (--brief-check W...) or every brief under briefs/.
+    Returns 1 when any brief is invalid."""
+    aliases = load_aliases(lit_dir)
+    d = briefs_dir(lit_dir)
+    if wid and wid != "all":
+        canonical = resolve_alias(bare_wid(wid), aliases)
+        p = brief_path(lit_dir, canonical)
+        if not p.exists():
+            print("error: no brief for {0}".format(canonical), file=sys.stderr)
+            return 1
+        return 0 if _check_brief_file(p, canonical) else 1
+    ok = True
+    if d.is_dir():
+        for p in sorted(d.glob("*.json")):
+            if not _check_brief_file(p, resolve_alias(p.stem, aliases)):
+                ok = False
+    return 0 if ok else 1
+
+
+VERB_FLAGS = ("doi", "openalex", "arxiv", "title", "ids", "inbox", "status", "check",
+              "enrich_pending", "brief_status", "brief_check")
 
 
 def build_parser():
@@ -1160,6 +1264,12 @@ def build_parser():
     p.add_argument("--inbox", action="store_true", help="triage .lit/inbox.jsonl")
     p.add_argument("--status", action="store_true", help="print corpus summary")
     p.add_argument("--check", action="store_true", help="live smoke test of endpoint forms")
+    p.add_argument("--enrich-pending", action="store_true",
+                   help="list briefs awaiting enrichment (pending and partial)")
+    p.add_argument("--brief-status", nargs="?", const="all", metavar="W-ID",
+                   help="brief counts by status and basis; optional W-id detail")
+    p.add_argument("--brief-check", nargs="?", const="all", metavar="W-ID",
+                   help="validate one brief or all; non-zero on invalid")
     p.add_argument("--dir", default=".lit", help="corpus root (default .lit)")
     p.add_argument("--api-key", default=os.environ.get("OPENALEX_API_KEY"),
                    help="OpenAlex API key (default env OPENALEX_API_KEY)")
@@ -1179,7 +1289,8 @@ def pick_verb(args):
         names.remove("title")   # --title is the required modifier of --arxiv
     if len(names) != 1:
         print("error: give exactly one of --doi/--openalex/--arxiv/--title/"
-              "--ids/--inbox/--status/--check", file=sys.stderr)
+              "--ids/--inbox/--status/--check/--enrich-pending/"
+              "--brief-status/--brief-check", file=sys.stderr)
         sys.exit(2)
     return names[0]
 
@@ -1248,6 +1359,12 @@ def main(argv=None):
             return verb_status(lit_dir)
         elif verb == "check":
             return verb_check(api_key)
+        elif verb == "enrich_pending":
+            return verb_enrich_pending(lit_dir)
+        elif verb == "brief_status":
+            return verb_brief_status(lit_dir, args.brief_status)
+        elif verb == "brief_check":
+            return verb_brief_check(lit_dir, args.brief_check)
     except BudgetExhausted:
         print(run.summary())
         print("budget exhausted; completed writes stand")

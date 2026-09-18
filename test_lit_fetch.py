@@ -561,6 +561,94 @@ def test_batch_merge_remaps_brief():
         assert lit_fetch.load_brief(lit, "W1111111111")["human"]["notes"] == "keep me"
 
 
+def test_enrich_pending_listing():
+    with tempfile.TemporaryDirectory() as tmp:
+        lit = pathlib.Path(tmp) / ".lit"
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            assert lit_fetch.verb_enrich_pending(lit) == 0
+        assert out.getvalue() == ""          # empty corpus: nothing, exit 0
+        lit_fetch.ensure_corpus(lit)
+        write_brief_file(lit, "W1", lit_fetch.new_brief("W1"))
+        partial = lit_fetch.new_brief("W2")
+        partial["status"] = "partial"
+        partial["agent"] = agent_shell(overview="o")
+        write_brief_file(lit, "W2", partial)
+        ready = lit_fetch.new_brief("W3")
+        ready["status"] = "ready"
+        write_brief_file(lit, "W3", ready)
+        (lit / "briefs" / "W4.json").write_text("{corrupt", encoding="utf-8")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            assert lit_fetch.verb_enrich_pending(lit) == 0
+        rows = [json.loads(line) for line in out.getvalue().splitlines()]
+        assert [(r["id"], r["status"]) for r in rows] == [
+            ("W1", "pending"), ("W2", "partial"), ("W4", "invalid")]
+
+
+def test_brief_status_counts_and_detail():
+    with tempfile.TemporaryDirectory() as tmp:
+        lit = pathlib.Path(tmp) / ".lit"
+        lit_fetch.ensure_corpus(lit)
+        write_brief_file(lit, "W1", lit_fetch.new_brief("W1"))
+        partial = lit_fetch.new_brief("W2")
+        partial["status"] = "partial"
+        write_brief_file(lit, "W2", partial)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            assert lit_fetch.verb_brief_status(lit, "all") == 0
+        text = out.getvalue()
+        assert "briefs=2" in text
+        assert "status pending=1" in text and "status partial=1" in text
+        assert "status ready=0" in text and "status stale=0" in text
+        # both fixture briefs keep basis none until a write derives a new basis
+        assert "basis none=2" in text
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            assert lit_fetch.verb_brief_status(lit, "W1") == 0
+        assert '"id": "W1"' in out.getvalue()
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            assert lit_fetch.verb_brief_status(lit, "W404") == 1
+
+
+def test_brief_check_ok_and_invalid():
+    with tempfile.TemporaryDirectory() as tmp:
+        lit = pathlib.Path(tmp) / ".lit"
+        lit_fetch.ensure_corpus(lit)
+        write_brief_file(lit, "W1", lit_fetch.new_brief("W1"))
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            assert lit_fetch.verb_brief_check(lit, "all") == 0
+        assert "OK W1" in out.getvalue()
+        bad = lit_fetch.new_brief("W2")
+        bad["status"] = "banana"
+        write_brief_file(lit, "W2", bad)
+        (lit / "briefs" / "W3.json").write_text("not json", encoding="utf-8")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            assert lit_fetch.verb_brief_check(lit, "all") == 1
+        assert "FAIL W2" in out.getvalue() and "FAIL W3" in out.getvalue()
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            assert lit_fetch.verb_brief_check(lit, "W1") == 0
+        assert "OK W1" in out.getvalue()
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            assert lit_fetch.verb_brief_check(lit, "W404") == 1
+
+
+def test_brief_cli_verbs_main():
+    with tempfile.TemporaryDirectory() as tmp:
+        lit = pathlib.Path(tmp) / ".lit"
+        assert lit_fetch.main(["--enrich-pending", "--dir", str(lit)]) == 0
+        try:
+            lit_fetch.main(["--status", "--enrich-pending", "--dir", str(lit)])
+            raise AssertionError("expected usage error")
+        except SystemExit as e:
+            assert e.code == 2
+
+
 def test_render_index():
     text = lit_fetch.render_index(3, 10, 5, 1, "2026-09-16T00:00:00Z")
     assert "| 3 |" in text and "| 10 |" in text and "| 5 |" in text and "| 1 |" in text
@@ -1128,6 +1216,10 @@ CHECKS = [
     test_remap_brief_noop_when_old_missing,
     test_capture_merge_remaps_brief,
     test_batch_merge_remaps_brief,
+    test_enrich_pending_listing,
+    test_brief_status_counts_and_detail,
+    test_brief_check_ok_and_invalid,
+    test_brief_cli_verbs_main,
 ]
 
 
