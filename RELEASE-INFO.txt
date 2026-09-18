@@ -1,4 +1,4 @@
 Product: jgs-lit-memory
-Version: 1.0.0
-Built: 2026-09-17T11:10:53Z
-Tag: v1.0.0
+Version: 1.1.0
+Built: 2026-09-18T14:07:35Z
+Tag: v1.1.0

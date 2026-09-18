@@ -6,6 +6,25 @@
 Single-source history for jgs-lit-memory. Tags are three-component semver
 (`vMAJOR.MINOR.PATCH`).
 
+## [1.1.0] - 2026-09-18
+
+Paper analysis-brief sidecars. On first successful paper write, the corpus
+gains a `pending` brief at `.lit/briefs/<W-id>.json`. The chat agent drains
+the enrichment queue and submits validated JSON; the script owns stubs,
+validation, stamps, and derived `status` / `basis`. No LLM calls in Python.
+
+- Brief schema, presence rules, stub factory, and script-derived `status` /
+  `basis` (stdlib only, single-file `lit_fetch.py`)
+- Claim and brief-level validation with atomic writes; failed writes leave
+  the previous brief untouched
+- Automatic pending stub on first paper write; stub failure surfaces without
+  undoing the paper record
+- Alias remap for briefs on both 301 merge sites
+- Read verbs: `--enrich-pending`, `--brief-status`, `--brief-check`
+- Write verbs: `--brief-write`, `--brief-restub`, `--human` (merge-only human
+  block unless `--human`)
+- Skill procedure and usage docs for the enrichment loop
+
 ## [1.0.0] - 2026-09-17
 
 First public release. `lit_fetch.py` captures scholarly papers from OpenAlex
