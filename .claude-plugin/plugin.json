@@ -1,7 +1,7 @@
 {
   "name": "jgs-lit-memory",
   "description": "Capture scholarly papers from OpenAlex into a per-project local corpus with the lit-capture skill for coding agents.",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "author": {
     "name": "JG Systems Consulting Ltd"
   },

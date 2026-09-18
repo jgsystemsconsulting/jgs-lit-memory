@@ -5,7 +5,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/licence-MIT-green" alt="Licence: MIT">
-  <img src="https://img.shields.io/badge/version-1.0.0-green" alt="Version 1.0.0">
+  <img src="https://img.shields.io/badge/version-1.1.0-green" alt="Version 1.1.0">
   <img src="https://img.shields.io/badge/skills-1-blueviolet" alt="1 skill">
   <img src="https://img.shields.io/badge/tested%20with-ZCode-8A2BE2" alt="Tested with ZCode">
   <img src="https://img.shields.io/badge/tested%20with-Claude%20Code-8A2BE2" alt="Tested with Claude Code">
@@ -53,7 +53,7 @@ Copy the prompt below into your coding agent (ZCode, Claude Code, Cursor, or
 similar). It reads this README and installs the pack autonomously.
 
 ```text
-Install jgs-lit-memory v1.0.0 (agent skill pack). Read the README and follow it. Do not invent steps.
+Install jgs-lit-memory v1.1.0 (agent skill pack). Read the README and follow it. Do not invent steps.
 
 Repository: https://github.com/jgsystemsconsulting/jgs-lit-memory
 
@@ -189,4 +189,4 @@ improvement form. Questions: [Discussions](https://github.com/jgsystemsconsultin
 Security: see [SECURITY.md](SECURITY.md) (private advisory; do not open a
 public issue). Product and support email: support@jgsystemsconsulting.com.
 
-Version: 1.0.0. History: [CHANGELOG.md](CHANGELOG.md).
+Version: 1.1.0. History: [CHANGELOG.md](CHANGELOG.md).
