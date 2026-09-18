@@ -6,3 +6,4 @@ __pycache__/
 .playwright-mcp/
 .tmp-install-check/
 release-notes.generated.md
+.worktrees/
