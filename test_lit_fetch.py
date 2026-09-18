@@ -10,6 +10,7 @@ network installs a fake via lit_fetch.http_get.
 import contextlib
 import io
 import json
+import os
 import pathlib
 import sys
 import tempfile
@@ -222,6 +223,612 @@ def test_remap_edges():
     ]
 
 
+# ---------------------------------------------------------------------------
+# checks: briefs (schema, derivation, IO, verbs)
+# ---------------------------------------------------------------------------
+
+def agent_shell(**over):
+    """Empty agent block with optional field overrides."""
+    agent = lit_fetch.empty_agent_block()
+    agent.update(over)
+    return agent
+
+
+def claim(cid, text="claim text", **over):
+    """One valid claim object with overrides."""
+    c = {"id": cid, "text": text, "type": "finding", "support": None,
+         "basis": "abstract", "confidence": "med", "page": None,
+         "section": None, "supports": [], "contradicts": []}
+    c.update(over)
+    return c
+
+
+def empty_human():
+    """Alias so the test reads like the spec block name."""
+    return lit_fetch.empty_human_block()
+
+
+def write_brief_file(lit, wid, brief):
+    """Atomically write one brief JSON file into lit/briefs/."""
+    lit_fetch.atomic_write(lit / "briefs" / (wid + ".json"),
+                           json.dumps(brief, indent=2, ensure_ascii=False) + "\n")
+
+
+def write_payload(tmp, payload):
+    """Write a brief payload JSON file; returns its path as str."""
+    p = pathlib.Path(tmp) / "payload.json"
+    p.write_text(json.dumps(payload), encoding="utf-8")
+    return str(p)
+
+
+def test_present_rules():
+    assert lit_fetch.present_str("x") and lit_fetch.present_str(" x ")
+    assert not lit_fetch.present_str("")
+    assert not lit_fetch.present_str(None)
+    assert not lit_fetch.present_str(5)
+    assert lit_fetch.present_claims([claim("c1")])
+    assert not lit_fetch.present_claims([claim("c1", text="")])
+    assert not lit_fetch.present_claims([])
+    assert not lit_fetch.present_claims(None)
+
+
+def test_new_brief_shape():
+    b = lit_fetch.new_brief("W1", "2026-09-16T00:00:00Z")
+    assert b["id"] == "W1" and b["schema_version"] == 1
+    assert b["status"] == "pending" and b["basis"] == "none"
+    assert b["enriched_at"] is None and b["enrichment_source"] is None
+    assert b["paper_captured_at"] == "2026-09-16T00:00:00Z"
+    assert b["agent"] == lit_fetch.empty_agent_block()
+    assert b["human"] == lit_fetch.empty_human_block()
+    assert lit_fetch.new_brief("W1")["paper_captured_at"] is None
+
+
+def test_paper_capture_stamp():
+    assert lit_fetch.paper_capture_stamp(
+        {"captured_at": "2026-09-16T00:00:00Z"}) == "2026-09-16T00:00:00Z"
+    assert lit_fetch.paper_capture_stamp({}) is None
+    assert lit_fetch.paper_capture_stamp({"captured_at": ""}) is None
+    assert lit_fetch.paper_capture_stamp({"captured_at": None}) is None
+    assert lit_fetch.paper_capture_stamp(None) is None
+
+
+def test_derive_basis():
+    A = agent_shell
+    assert lit_fetch.derive_basis(A()) == "none"
+    assert lit_fetch.derive_basis(A(claims=[claim("c1", text="")])) == "none"
+    assert lit_fetch.derive_basis(A(claims=[claim("c1", basis="abstract")])) == "abstract"
+    assert lit_fetch.derive_basis(A(claims=[claim("c1", basis="fulltext"),
+                                            claim("c2", basis="fulltext")])) == "fulltext"
+    assert lit_fetch.derive_basis(A(claims=[claim("c1", basis="abstract"),
+                                            claim("c2", basis="fulltext")])) == "mixed"
+    assert lit_fetch.derive_basis(A(claims=[claim("c1", basis="human"),
+                                            claim("c2", basis="abstract")])) == "mixed"
+    assert lit_fetch.derive_basis(A(claims=[claim("c1", basis="human")])) == "mixed"
+
+
+def test_derive_status():
+    A = agent_shell
+    ids = {"c1", "c2"}
+    assert lit_fetch.derive_status(A(), ids) == "pending"
+    assert lit_fetch.derive_status(A(notes="a note"), ids) == "partial"
+    full = A(overview="o", methods_tests="m", limits="l", why_it_matters="w",
+             claims=[claim("c1"), claim("c2")])
+    assert lit_fetch.derive_status(full, ids) == "ready"
+    # thin fulltext fill that fails ready: partial, basis still fulltext
+    thin = A(overview="o", claims=[claim("c1", basis="fulltext")])
+    assert lit_fetch.derive_status(thin, {"c1"}) == "partial"
+    assert lit_fetch.derive_basis(thin) == "fulltext"
+
+
+def test_ready_content_union_targets():
+    full = agent_shell(overview="o", methods_tests="m", limits="l",
+                       why_it_matters="w",
+                       claims=[claim("c1", supports=["h1"])])
+    assert lit_fetch.ready_content(full, {"c1", "h1"})
+    assert not lit_fetch.ready_content(full, {"c1"})   # dangling target blocks ready
+    assert not lit_fetch.ready_content(agent_shell(overview="o"), {"c1"})
+
+
+def test_validate_claim_rejects():
+    lit_fetch.validate_claim(claim("c1"), "agent")   # no raise
+    mutations = (
+        lambda c: c.pop("id"),
+        lambda c: c.pop("text"),
+        lambda c: c.pop("type"),
+        lambda c: c.pop("confidence"),
+        lambda c: c.pop("basis"),
+        lambda c: c.update(type="wrong"),
+        lambda c: c.update(confidence="certain"),
+        lambda c: c.update(basis="vibes"),
+        lambda c: c.update(id=""),
+        lambda c: c.update(text=5),
+        lambda c: c.update(supports="c2"),
+    )
+    for mutate in mutations:
+        bad = claim("c1")
+        mutate(bad)
+        try:
+            lit_fetch.validate_claim(bad, "agent")
+            raise AssertionError("expected BriefValidationError")
+        except lit_fetch.BriefValidationError:
+            pass
+
+
+def test_validate_claim_lists_union():
+    a = agent_shell(claims=[claim("c1"), claim("c2", supports=["c1"])])
+    h = dict(empty_human(), claims=[claim("h1", basis="human")])
+    assert lit_fetch.validate_claim_lists(a, h) == {"c1", "c2", "h1"}
+    dup_h = dict(h, claims=[claim("c1", basis="human")])
+    try:
+        lit_fetch.validate_claim_lists(agent_shell(claims=[claim("c1")]), dup_h)
+        raise AssertionError("expected BriefValidationError")
+    except lit_fetch.BriefValidationError as e:
+        assert "duplicate" in str(e)
+    dang = agent_shell(claims=[claim("c1", contradicts=["ghost"])])
+    try:
+        lit_fetch.validate_claim_lists(dang, h)
+        raise AssertionError("expected BriefValidationError")
+    except lit_fetch.BriefValidationError as e:
+        assert "ghost" in str(e)
+
+
+def test_validate_brief_stub_and_ready():
+    stub = lit_fetch.new_brief("W1")
+    assert lit_fetch.validate_brief(stub) == []
+    full = lit_fetch.new_brief("W1")
+    full["agent"] = agent_shell(overview="o", methods_tests="m", limits="l",
+                                why_it_matters="w",
+                                claims=[claim("c1"), claim("c2")])
+    full["status"] = "ready"
+    full["basis"] = "abstract"
+    full["enriched_at"] = "2026-09-18T00:00:00Z"
+    full["enrichment_source"] = "agent"
+    assert lit_fetch.validate_brief(full) == []
+    bad = lit_fetch.new_brief("W1")
+    bad["status"] = "ready"          # a stub derives pending; stored value lies
+    assert any("status" in p for p in lit_fetch.validate_brief(bad))
+    bad2 = lit_fetch.new_brief("W1")
+    bad2["enrichment_source"] = "human"   # reserved value, never assigned in v1
+    assert any("enrichment_source" in p for p in lit_fetch.validate_brief(bad2))
+    bad3 = lit_fetch.new_brief("W1")
+    bad3["agent"]["related_in_corpus"] = [{"id": "c1", "note": "claim id, not a paper"}]
+    assert any("related_in_corpus" in p for p in lit_fetch.validate_brief(bad3))
+
+
+def test_ensure_brief_stub_and_no_clobber():
+    with tempfile.TemporaryDirectory() as tmp:
+        lit = pathlib.Path(tmp) / ".lit"
+        rec = lit_fetch.normalize_work(SAMPLE_PAYLOAD, seed=True, source="capture",
+                                       captured_at="2026-09-16T00:00:00Z")
+        lit_fetch.write_record(rec, lit)
+        assert lit_fetch.ensure_brief_stub(lit, "W1111111111") is True
+        brief = lit_fetch.load_brief(lit, "W1111111111")
+        assert brief["status"] == "pending" and brief["basis"] == "none"
+        assert brief["enriched_at"] is None and brief["enrichment_source"] is None
+        assert brief["paper_captured_at"] == "2026-09-16T00:00:00Z"
+        assert lit_fetch.validate_brief(brief) == []
+        # second ensure is a no-op and never clobbers
+        assert lit_fetch.ensure_brief_stub(lit, "W1111111111") is False
+        assert lit_fetch.load_brief(lit, "W1111111111") == brief
+
+
+def test_ensure_brief_stub_without_stamp():
+    with tempfile.TemporaryDirectory() as tmp:
+        lit = pathlib.Path(tmp) / ".lit"
+        lit_fetch.ensure_corpus(lit)
+        (lit / "papers" / "W1.json").write_text(
+            json.dumps({"id": "W1"}), encoding="utf-8")   # no captured_at
+        assert lit_fetch.ensure_brief_stub(lit, "W1") is True
+        assert lit_fetch.load_brief(lit, "W1")["paper_captured_at"] is None
+
+
+def test_first_write_makes_exactly_one_stub_and_refetch_keeps_brief():
+    with tempfile.TemporaryDirectory() as tmp:
+        lit = pathlib.Path(tmp) / ".lit"
+        with contextlib.redirect_stdout(io.StringIO()):
+            run = lit_fetch.Run()
+            lit_fetch.write_one(SAMPLE_PAYLOAD, lit, run, True, "capture")
+        assert run.written == 1 and run.failed == 0
+        briefs = list((lit / "briefs").glob("*.json"))
+        assert len(briefs) == 1 and briefs[0].stem == "W1111111111"
+        # the agent enriches the stub, then the paper is re-fetched (skip path)
+        brief = lit_fetch.load_brief(lit, "W1111111111")
+        brief["agent"] = agent_shell(overview="enriched")
+        write_brief_file(lit, "W1111111111", brief)
+        with contextlib.redirect_stdout(io.StringIO()):
+            run2 = lit_fetch.Run()
+            lit_fetch.write_one(SAMPLE_PAYLOAD, lit, run2, True, "capture")
+        assert run2.skipped == 1 and run2.written == 0
+        assert lit_fetch.load_brief(lit, "W1111111111")["agent"]["overview"] == "enriched"
+
+
+def test_stub_failure_surfaces():
+    with tempfile.TemporaryDirectory() as tmp:
+        lit = pathlib.Path(tmp) / ".lit"
+
+        def boom(lit_dir, wid):
+            raise OSError("briefs path unwritable")
+
+        prev = lit_fetch.ensure_brief_stub
+        lit_fetch.ensure_brief_stub = boom
+        err = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                with contextlib.redirect_stderr(err):
+                    run = lit_fetch.Run()
+                    lit_fetch.write_one(SAMPLE_PAYLOAD, lit, run, True, "capture")
+        finally:
+            lit_fetch.ensure_brief_stub = prev
+        assert run.written == 1            # paper write stands
+        assert run.failed == 1             # stub failure is a counted failure
+        assert run.failures[0][0] == "brief-stub:W1111111111"
+        assert "brief_stub_failed" in err.getvalue()
+
+
+def test_remap_brief_moves_and_merges():
+    with tempfile.TemporaryDirectory() as tmp:
+        lit = pathlib.Path(tmp) / ".lit"
+        lit_fetch.ensure_corpus(lit)
+        # case 1: only the old brief exists -> moves to the new id
+        old = lit_fetch.new_brief("W9999999999")
+        old["agent"] = agent_shell(overview="old notes")
+        write_brief_file(lit, "W9999999999", old)
+        lit_fetch.remap_brief(lit, "W9999999999", "W1111111111")
+        assert not (lit / "briefs" / "W9999999999.json").exists()
+        moved = lit_fetch.load_brief(lit, "W1111111111")
+        assert moved["id"] == "W1111111111"
+        assert moved["agent"]["overview"] == "old notes"
+        # case 2: both exist -> newer mtime agent wins; empty human slots fill from loser
+        winner = lit_fetch.new_brief("W1111111111")
+        winner["agent"] = agent_shell(overview="newer agent")
+        winner["human"]["notes"] = "winner notes"  # conflict keeps winner's notes
+        write_brief_file(lit, "W1111111111", winner)
+        loser = lit_fetch.new_brief("W9999999999")
+        loser["human"]["overview"] = "human note to keep"
+        loser["human"]["notes"] = "conflicting human note"
+        write_brief_file(lit, "W9999999999", loser)
+        # make loser older so winner's mtime is newer
+        os.utime(lit / "briefs" / "W9999999999.json", (1000000000, 1000000000))
+        lit_fetch.remap_brief(lit, "W9999999999", "W1111111111")
+        assert not (lit / "briefs" / "W9999999999.json").exists()
+        merged = lit_fetch.load_brief(lit, "W1111111111")
+        assert merged["agent"]["overview"] == "newer agent"   # newer mtime wins
+        assert merged["human"]["overview"] == "human note to keep"  # filled from loser
+        assert merged["human"]["notes"] == "winner notes"     # conflict keeps winner
+
+
+def test_remap_brief_noop_when_old_missing():
+    with tempfile.TemporaryDirectory() as tmp:
+        lit = pathlib.Path(tmp) / ".lit"
+        lit_fetch.ensure_corpus(lit)
+        lit_fetch.remap_brief(lit, "W8888888888", "W1111111111")   # no raise
+        assert lit_fetch.load_brief(lit, "W1111111111") is None
+
+
+def test_capture_merge_remaps_brief():
+    with tempfile.TemporaryDirectory() as tmp:
+        lit = pathlib.Path(tmp) / ".lit"
+        lit_fetch.ensure_corpus(lit)
+        stale = lit_fetch.new_brief("W9999999999")
+        stale["agent"] = agent_shell(overview="pre-merge agent")
+        write_brief_file(lit, "W9999999999", stale)
+
+        def handler(url):
+            assert "/works/W9999999999?" in url
+            return (200, {"x-ratelimit-remaining": "9999"},
+                    json.dumps(SAMPLE_PAYLOAD))   # canonical W1111111111
+
+        with fake_http(handler):
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                run = lit_fetch.Run()
+                lit_fetch.capture_identifier("W9999999999", True, lit, None, run)
+        assert "merge: W9999999999 -> W1111111111" in out.getvalue()
+        assert run.failed == 0
+        assert not (lit / "briefs" / "W9999999999.json").exists()
+        brief = lit_fetch.load_brief(lit, "W1111111111")
+        assert brief["agent"]["overview"] == "pre-merge agent"   # moved, not clobbered
+        assert lit_fetch.load_aliases(lit) == {"W9999999999": "W1111111111"}
+        # operations via the old id resolve onto the single canonical file
+        payload = {"agent": agent_shell(overview="written via old id")}
+        with contextlib.redirect_stdout(io.StringIO()):
+            assert lit_fetch.verb_brief_write(
+                lit, "W9999999999", write_payload(tmp, payload), False) == 0
+        assert not (lit / "briefs" / "W9999999999.json").exists()
+        assert lit_fetch.load_brief(
+            lit, "W1111111111")["agent"]["overview"] == "written via old id"
+
+
+def test_batch_merge_remaps_brief():
+    with tempfile.TemporaryDirectory() as tmp:
+        lit = pathlib.Path(tmp) / ".lit"
+        lit_fetch.ensure_corpus(lit)
+        stale = lit_fetch.new_brief("W9999999999")
+        stale["human"]["notes"] = "keep me"
+        write_brief_file(lit, "W9999999999", stale)
+
+        def handler(url):
+            return (200, {"x-ratelimit-remaining": "9"}, envelope([SAMPLE_PAYLOAD]))
+
+        with fake_http(handler):
+            with contextlib.redirect_stdout(io.StringIO()):
+                run = lit_fetch.Run()
+                lit_fetch.verb_ids("W9999999999", lit, None, False, run)
+        assert run.written == 1 and run.failed == 0
+        assert not (lit / "briefs" / "W9999999999.json").exists()
+        assert lit_fetch.load_brief(lit, "W1111111111")["human"]["notes"] == "keep me"
+
+
+def test_enrich_pending_listing():
+    with tempfile.TemporaryDirectory() as tmp:
+        lit = pathlib.Path(tmp) / ".lit"
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            assert lit_fetch.verb_enrich_pending(lit) == 0
+        assert out.getvalue() == ""          # empty corpus: nothing, exit 0
+        lit_fetch.ensure_corpus(lit)
+        write_brief_file(lit, "W1", lit_fetch.new_brief("W1"))
+        partial = lit_fetch.new_brief("W2")
+        partial["status"] = "partial"
+        partial["agent"] = agent_shell(overview="o")
+        write_brief_file(lit, "W2", partial)
+        ready = lit_fetch.new_brief("W3")
+        ready["status"] = "ready"
+        write_brief_file(lit, "W3", ready)
+        (lit / "briefs" / "W4.json").write_text("{corrupt", encoding="utf-8")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            assert lit_fetch.verb_enrich_pending(lit) == 0
+        rows = [json.loads(line) for line in out.getvalue().splitlines()]
+        assert [(r["id"], r["status"]) for r in rows] == [
+            ("W1", "pending"), ("W2", "partial"), ("W4", "invalid")]
+
+
+def test_brief_status_counts_and_detail():
+    with tempfile.TemporaryDirectory() as tmp:
+        lit = pathlib.Path(tmp) / ".lit"
+        lit_fetch.ensure_corpus(lit)
+        write_brief_file(lit, "W1", lit_fetch.new_brief("W1"))
+        partial = lit_fetch.new_brief("W2")
+        partial["status"] = "partial"
+        write_brief_file(lit, "W2", partial)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            assert lit_fetch.verb_brief_status(lit, "all") == 0
+        text = out.getvalue()
+        assert "briefs=2" in text
+        assert "status pending=1" in text and "status partial=1" in text
+        assert "status ready=0" in text and "status stale=0" in text
+        # both fixture briefs keep basis none until a write derives a new basis
+        assert "basis none=2" in text
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            assert lit_fetch.verb_brief_status(lit, "W1") == 0
+        assert '"id": "W1"' in out.getvalue()
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            assert lit_fetch.verb_brief_status(lit, "W404") == 1
+
+
+def test_brief_check_ok_and_invalid():
+    with tempfile.TemporaryDirectory() as tmp:
+        lit = pathlib.Path(tmp) / ".lit"
+        lit_fetch.ensure_corpus(lit)
+        write_brief_file(lit, "W1", lit_fetch.new_brief("W1"))
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            assert lit_fetch.verb_brief_check(lit, "all") == 0
+        assert "OK W1" in out.getvalue()
+        bad = lit_fetch.new_brief("W2")
+        bad["status"] = "banana"
+        write_brief_file(lit, "W2", bad)
+        (lit / "briefs" / "W3.json").write_text("not json", encoding="utf-8")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            assert lit_fetch.verb_brief_check(lit, "all") == 1
+        assert "FAIL W2" in out.getvalue() and "FAIL W3" in out.getvalue()
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            assert lit_fetch.verb_brief_check(lit, "W1") == 0
+        assert "OK W1" in out.getvalue()
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            assert lit_fetch.verb_brief_check(lit, "W404") == 1
+
+
+def test_brief_cli_verbs_main():
+    with tempfile.TemporaryDirectory() as tmp:
+        lit = pathlib.Path(tmp) / ".lit"
+        assert lit_fetch.main(["--enrich-pending", "--dir", str(lit)]) == 0
+        try:
+            lit_fetch.main(["--status", "--enrich-pending", "--dir", str(lit)])
+            raise AssertionError("expected usage error")
+        except SystemExit as e:
+            assert e.code == 2
+
+
+def test_brief_write_happy_and_derived_fields():
+    with tempfile.TemporaryDirectory() as tmp:
+        lit = pathlib.Path(tmp) / ".lit"
+        rec = lit_fetch.normalize_work(SAMPLE_PAYLOAD, seed=True, source="capture",
+                                       captured_at="2026-09-16T00:00:00Z")
+        lit_fetch.write_record(rec, lit)
+        payload = {"agent": agent_shell(
+            overview="o", methods_tests="m", limits="l", why_it_matters="w",
+            claims=[claim("c1"), claim("c2", supports=["c1"])])}
+        payload["status"] = "ready"       # ignored: script derives
+        payload["basis"] = "fulltext"     # ignored: script derives
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = lit_fetch.verb_brief_write(lit, "W1111111111",
+                                            write_payload(tmp, payload), False)
+        assert rc == 0
+        brief = lit_fetch.load_brief(lit, "W1111111111")
+        assert brief["status"] == "ready" and brief["basis"] == "abstract"
+        assert brief["enrichment_source"] == "agent"
+        assert brief["enriched_at"] and brief["enriched_at"].endswith("Z")
+        assert brief["paper_captured_at"] == "2026-09-16T00:00:00Z"
+        assert brief["id"] == "W1111111111" and brief["schema_version"] == 1
+        assert lit_fetch.validate_brief(brief) == []
+
+
+def test_brief_write_preserves_human():
+    with tempfile.TemporaryDirectory() as tmp:
+        lit = pathlib.Path(tmp) / ".lit"
+        lit_fetch.ensure_corpus(lit)
+        (lit / "papers" / "W1.json").write_text(
+            json.dumps({"id": "W1", "captured_at": "2026-09-16T00:00:00Z"}),
+            encoding="utf-8")
+        seeded = lit_fetch.new_brief("W1")
+        seeded["human"]["notes"] = "human note"
+        seeded["human"]["claims"] = [claim("h1", basis="human")]
+        write_brief_file(lit, "W1", seeded)
+        # payload omits human entirely: preserved
+        payload = {"agent": agent_shell(overview="o")}
+        assert lit_fetch.verb_brief_write(
+            lit, "W1", write_payload(tmp, payload), False) == 0
+        brief = lit_fetch.load_brief(lit, "W1")
+        assert brief["human"]["notes"] == "human note"
+        assert brief["human"]["claims"][0]["id"] == "h1"
+        assert brief["enrichment_source"] == "agent"
+        # payload alters human without --human: still preserved
+        payload["human"] = {"notes": "clobber attempt"}
+        assert lit_fetch.verb_brief_write(
+            lit, "W1", write_payload(tmp, payload), False) == 0
+        assert lit_fetch.load_brief(lit, "W1")["human"]["notes"] == "human note"
+        # --human replaces
+        assert lit_fetch.verb_brief_write(
+            lit, "W1", write_payload(tmp, payload), True) == 0
+        brief = lit_fetch.load_brief(lit, "W1")
+        assert brief["human"]["notes"] == "clobber attempt"
+        assert brief["human"]["claims"] == []
+        assert brief["enrichment_source"] == "mixed"
+        # --human without a payload human object rejects
+        del payload["human"]
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            assert lit_fetch.verb_brief_write(
+                lit, "W1", write_payload(tmp, payload), True) == 1
+
+
+def test_brief_write_rejections_leave_file_untouched():
+    with tempfile.TemporaryDirectory() as tmp:
+        lit = pathlib.Path(tmp) / ".lit"
+        lit_fetch.ensure_corpus(lit)
+        (lit / "papers" / "W1.json").write_text(
+            json.dumps({"id": "W1", "captured_at": "2026-09-16T00:00:00Z"}),
+            encoding="utf-8")
+        write_brief_file(lit, "W1", lit_fetch.new_brief("W1"))
+        before = (lit / "briefs" / "W1.json").read_text(encoding="utf-8")
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            # payload without agent
+            assert lit_fetch.verb_brief_write(
+                lit, "W1", write_payload(tmp, {"human": {"notes": "x"}}), False) == 1
+            # agent not an object
+            assert lit_fetch.verb_brief_write(
+                lit, "W1", write_payload(tmp, {"agent": "prose"}), False) == 1
+            # dangling support target
+            assert lit_fetch.verb_brief_write(
+                lit, "W1",
+                write_payload(tmp, {"agent": agent_shell(
+                    claims=[claim("c1", supports=["ghost"])])}), False) == 1
+            # duplicate claim id across the union
+            dup = {"agent": agent_shell(claims=[claim("c1")]),
+                   "human": dict(lit_fetch.empty_human_block(),
+                                 claims=[claim("c1", basis="human")])}
+            assert lit_fetch.verb_brief_write(
+                lit, "W1", write_payload(tmp, dup), True) == 1
+            # no resolvable paper record
+            assert lit_fetch.verb_brief_write(
+                lit, "W404",
+                write_payload(tmp, {"agent": agent_shell()}), False) == 1
+        assert "ghost" in err.getvalue()
+        assert (lit / "briefs" / "W1.json").read_text(encoding="utf-8") == before
+        assert not list((lit / "briefs").glob("*.tmp"))
+
+
+def test_brief_write_status_levels():
+    with tempfile.TemporaryDirectory() as tmp:
+        lit = pathlib.Path(tmp) / ".lit"
+        lit_fetch.ensure_corpus(lit)
+        (lit / "papers" / "W1.json").write_text(
+            json.dumps({"id": "W1", "captured_at": None}), encoding="utf-8")
+        # empty shell -> pending even when the payload claims ready
+        assert lit_fetch.verb_brief_write(
+            lit, "W1",
+            write_payload(tmp, {"agent": agent_shell(), "status": "ready"}),
+            False) == 0
+        brief = lit_fetch.load_brief(lit, "W1")
+        assert brief["status"] == "pending" and brief["basis"] == "none"
+        assert brief["paper_captured_at"] is None
+        assert brief["enriched_at"] is not None   # a write always stamps
+        # thin fulltext fill -> partial, basis fulltext
+        thin = {"agent": agent_shell(overview="o",
+                                     claims=[claim("c1", basis="fulltext")])}
+        assert lit_fetch.verb_brief_write(
+            lit, "W1", write_payload(tmp, thin), False) == 0
+        brief = lit_fetch.load_brief(lit, "W1")
+        assert brief["status"] == "partial" and brief["basis"] == "fulltext"
+        # full fill -> ready
+        full = {"agent": agent_shell(overview="o", methods_tests="m", limits="l",
+                                     why_it_matters="w",
+                                     claims=[claim("c1"),
+                                             claim("c2", supports=["c1"])])}
+        assert lit_fetch.verb_brief_write(
+            lit, "W1", write_payload(tmp, full), False) == 0
+        brief = lit_fetch.load_brief(lit, "W1")
+        assert brief["status"] == "ready" and brief["basis"] == "abstract"
+
+
+def test_brief_restub_keeps_human_and_stamp():
+    with tempfile.TemporaryDirectory() as tmp:
+        lit = pathlib.Path(tmp) / ".lit"
+        lit_fetch.ensure_corpus(lit)
+        seeded = lit_fetch.new_brief("W1", "2026-09-16T00:00:00Z")
+        seeded["status"] = "ready"
+        seeded["basis"] = "abstract"
+        seeded["enriched_at"] = "2026-09-18T00:00:00Z"
+        seeded["enrichment_source"] = "agent"
+        seeded["agent"] = agent_shell(overview="o")
+        seeded["human"]["notes"] = "human note"
+        write_brief_file(lit, "W1", seeded)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            assert lit_fetch.verb_brief_restub(lit, "W1") == 0
+        brief = lit_fetch.load_brief(lit, "W1")
+        assert brief["status"] == "pending" and brief["basis"] == "none"
+        assert brief["enriched_at"] is None and brief["enrichment_source"] is None
+        assert brief["agent"] == lit_fetch.empty_agent_block()
+        assert brief["human"]["notes"] == "human note"
+        assert brief["paper_captured_at"] == "2026-09-16T00:00:00Z"
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            assert lit_fetch.verb_brief_restub(lit, "W2") == 1   # no brief
+
+
+def test_brief_write_cli_flags():
+    with tempfile.TemporaryDirectory() as tmp:
+        lit = pathlib.Path(tmp) / ".lit"
+        lit_fetch.ensure_corpus(lit)
+        (lit / "papers" / "W1.json").write_text(
+            json.dumps({"id": "W1", "captured_at": None}), encoding="utf-8")
+        payload = write_payload(tmp, {"agent": agent_shell(overview="o")})
+        with contextlib.redirect_stdout(io.StringIO()):
+            assert lit_fetch.main(["--brief-write", "--id", "W1",
+                                   "--file", payload, "--dir", str(lit)]) == 0
+        assert lit_fetch.load_brief(lit, "W1")["status"] == "partial"
+        with contextlib.redirect_stdout(io.StringIO()):
+            assert lit_fetch.main(["--brief-restub", "--id", "W1",
+                                   "--dir", str(lit)]) == 0
+        assert lit_fetch.load_brief(lit, "W1")["status"] == "pending"
+        try:   # usage error: --brief-write without --file
+            lit_fetch.main(["--brief-write", "--id", "W1", "--dir", str(lit)])
+            raise AssertionError("expected exit 2")
+        except SystemExit as e:
+            assert e.code == 2
+
+
 def test_render_index():
     text = lit_fetch.render_index(3, 10, 5, 1, "2026-09-16T00:00:00Z")
     assert "| 3 |" in text and "| 10 |" in text and "| 5 |" in text and "| 1 |" in text
@@ -243,6 +850,7 @@ def test_atomic_write_and_corpus_init():
         assert (lit / "papers").is_dir()
         assert (lit / "graph").is_dir()
         assert (lit / "findings").is_dir()
+        assert (lit / "briefs").is_dir()
         lit_fetch.atomic_write(lit / "graph" / "edges.jsonl", "x\n")
         assert (lit / "graph" / "edges.jsonl").read_text(encoding="utf-8") == "x\n"
         assert not list(lit.rglob("*.tmp"))
@@ -771,6 +1379,33 @@ CHECKS = [
     test_inbox_triage_flow,
     test_status_never_before_index,
     test_check_forms_fake,
+    test_present_rules,
+    test_new_brief_shape,
+    test_paper_capture_stamp,
+    test_derive_basis,
+    test_derive_status,
+    test_ready_content_union_targets,
+    test_validate_claim_rejects,
+    test_validate_claim_lists_union,
+    test_validate_brief_stub_and_ready,
+    test_ensure_brief_stub_and_no_clobber,
+    test_ensure_brief_stub_without_stamp,
+    test_first_write_makes_exactly_one_stub_and_refetch_keeps_brief,
+    test_stub_failure_surfaces,
+    test_remap_brief_moves_and_merges,
+    test_remap_brief_noop_when_old_missing,
+    test_capture_merge_remaps_brief,
+    test_batch_merge_remaps_brief,
+    test_enrich_pending_listing,
+    test_brief_status_counts_and_detail,
+    test_brief_check_ok_and_invalid,
+    test_brief_cli_verbs_main,
+    test_brief_write_happy_and_derived_fields,
+    test_brief_write_preserves_human,
+    test_brief_write_rejections_leave_file_untouched,
+    test_brief_write_status_levels,
+    test_brief_restub_keeps_human_and_stamp,
+    test_brief_write_cli_flags,
 ]
 
 

@@ -232,6 +232,254 @@ def remap_edges(edges, aliases):
             for e in edges]
 
 
+# ---------------------------------------------------------------------------
+# pure corpus logic: analysis briefs (sidecar .lit/briefs/<W-id>.json)
+# ---------------------------------------------------------------------------
+
+BRIEF_SCHEMA_VERSION = 1
+BRIEF_STATUS = ("pending", "partial", "ready", "stale")   # stale reserved, v1 never writes it
+BRIEF_BASIS = ("none", "abstract", "fulltext", "mixed")
+CLAIM_TYPES = ("contribution", "finding", "method", "limit", "assumption", "other")
+CLAIM_BASIS = ("abstract", "fulltext", "human")
+CLAIM_CONFIDENCE = ("low", "med", "high")
+CLAIM_REQUIRED = ("id", "text", "type", "confidence", "basis")
+AGENT_TEXT_FIELDS = ("overview", "methods_tests", "limits", "why_it_matters", "notes")
+
+
+def present_str(value):
+    """A string field is present when non-null with stripped length > 0."""
+    return isinstance(value, str) and bool(value.strip())
+
+
+def present_claims(claims):
+    """A claims array is present when at least one claim has present text."""
+    return any(isinstance(c, dict) and present_str(c.get("text"))
+               for c in claims or [])
+
+
+def empty_agent_block():
+    """Agent-owned fields; the agent block is fully replaced on re-enrich."""
+    return {"overview": "", "claims": [], "methods_tests": "", "limits": "",
+            "why_it_matters": "", "related_in_corpus": [], "open_questions": [],
+            "notes": ""}
+
+
+def empty_human_block():
+    """Human-owned fields; merge-only. null means "not dictated by the user"."""
+    return {"overview": None, "claims": [], "methods_tests": None, "limits": None,
+            "why_it_matters": None, "open_questions": [], "notes": None}
+
+
+def new_brief(wid, paper_captured_at=None):
+    """The stub shape: pending, no stamps, empty shells. No placeholder claims."""
+    return {"id": wid,
+            "schema_version": BRIEF_SCHEMA_VERSION,
+            "status": "pending",
+            "basis": "none",
+            "enriched_at": None,
+            "enrichment_source": None,
+            "paper_captured_at": paper_captured_at,
+            "agent": empty_agent_block(),
+            "human": empty_human_block()}
+
+
+def paper_capture_stamp(paper):
+    """The paper record's capture stamp (captured_at), or None."""
+    if not isinstance(paper, dict):
+        return None
+    stamp = paper.get("captured_at")
+    return stamp if isinstance(stamp, str) and stamp.strip() else None
+
+
+def derive_basis(agent):
+    """Top-level basis from agent.claims basis values only (human claims never
+    move it). No claims with present text -> none; all-abstract -> abstract;
+    all-fulltext -> fulltext; any other combination (including human-only,
+    which is unexpected) -> mixed."""
+    bases = [c.get("basis") for c in (agent or {}).get("claims") or []
+             if isinstance(c, dict) and present_str(c.get("text"))]
+    if not bases:
+        return "none"
+    if set(bases) == {"abstract"}:
+        return "abstract"
+    if set(bases) == {"fulltext"}:
+        return "fulltext"
+    return "mixed"
+
+
+def nonempty_agent(agent):
+    """Any agent-authored content at all (spec: pending vs partial gate)."""
+    a = agent or {}
+    return bool(present_str(a.get("overview"))
+                or present_str(a.get("methods_tests"))
+                or present_str(a.get("limits"))
+                or present_str(a.get("why_it_matters"))
+                or present_str(a.get("notes"))
+                or (a.get("open_questions") or [])
+                or (a.get("related_in_corpus") or [])
+                or present_claims(a.get("claims")))
+
+
+def ready_content(agent, union_ids):
+    """Ready predicate on the agent block: overview, at least one claim with
+    present text, methods_tests / limits / why_it_matters present, every such
+    claim carrying allowed type / confidence / basis enums, and every
+    supports / contradicts target existing in the agent+human claim-id union."""
+    a = agent or {}
+    if not present_str(a.get("overview")):
+        return False
+    claims = [c for c in a.get("claims") or []
+              if isinstance(c, dict) and present_str(c.get("text"))]
+    if not claims:
+        return False
+    for field in ("methods_tests", "limits", "why_it_matters"):
+        if not present_str(a.get(field)):
+            return False
+    for c in claims:
+        if c.get("type") not in CLAIM_TYPES:
+            return False
+        if c.get("confidence") not in CLAIM_CONFIDENCE:
+            return False
+        if c.get("basis") not in CLAIM_BASIS:
+            return False
+        for t in (c.get("supports") or []) + (c.get("contradicts") or []):
+            if t not in union_ids:
+                return False
+    return True
+
+
+def derive_status(agent, union_ids):
+    """Closed function; stored status is ignored. pending -> ready -> partial."""
+    if not nonempty_agent(agent):
+        return "pending"
+    if ready_content(agent, union_ids):
+        return "ready"
+    return "partial"
+
+
+class BriefValidationError(Exception):
+    """--brief-write rejects the payload before any file is written."""
+
+
+def validate_claim(claim, where):
+    """Schema-validate one claim object. id / text / type / confidence / basis
+    are required (text may be "" and simply counts as absent for derivation;
+    id must be non-empty). Optional: support, page, section, supports,
+    contradicts."""
+    if not isinstance(claim, dict):
+        raise BriefValidationError(where + ": claim is not an object")
+    for field in CLAIM_REQUIRED:
+        if field not in claim:
+            raise BriefValidationError(where + ": missing required field " + field)
+    if not isinstance(claim["id"], str) or not claim["id"].strip():
+        raise BriefValidationError(where + ": id must be a non-empty string")
+    if not isinstance(claim["text"], str):
+        raise BriefValidationError(where + ": text must be a string")
+    if claim["type"] not in CLAIM_TYPES:
+        raise BriefValidationError(where + ": illegal type " + repr(claim["type"]))
+    if claim["confidence"] not in CLAIM_CONFIDENCE:
+        raise BriefValidationError(where + ": illegal confidence "
+                                   + repr(claim["confidence"]))
+    if claim["basis"] not in CLAIM_BASIS:
+        raise BriefValidationError(where + ": illegal basis " + repr(claim["basis"]))
+    for field in ("support", "page", "section"):
+        if field in claim and claim[field] is not None and not isinstance(claim[field], str):
+            raise BriefValidationError(where + ": " + field + " must be a string or null")
+    for field in ("supports", "contradicts"):
+        if field in claim and not isinstance(claim[field], list):
+            raise BriefValidationError(where + ": " + field + " must be an array")
+
+
+def validate_claim_lists(agent, human):
+    """Schema-validate every claim in both lists, then enforce claim-id
+    uniqueness and supports / contradicts target existence over the union.
+    Returns the union id set. Raises BriefValidationError."""
+    ids = []
+    for where, block in (("agent", agent), ("human", human)):
+        claims = (block or {}).get("claims") or []
+        if not isinstance(claims, list):
+            raise BriefValidationError(where + ".claims must be an array")
+        for i, c in enumerate(claims):
+            validate_claim(c, "{0}.claims[{1}]".format(where, i))
+            ids.append(c["id"])
+    union = set(ids)
+    if len(union) != len(ids):
+        raise BriefValidationError(
+            "duplicate claim ids across agent+human claims")
+    for where, block in (("agent", agent), ("human", human)):
+        for i, c in enumerate((block or {}).get("claims") or []):
+            for field in ("supports", "contradicts"):
+                for t in c.get(field) or []:
+                    if t not in union:
+                        raise BriefValidationError(
+                            "{0}.claims[{1}].{2}: target {3} not in the "
+                            "claim union".format(where, i, field, t))
+    return union
+
+
+def validate_brief(brief):
+    """Structural validation of one stored brief. Returns a list of problem
+    strings; empty means valid. Also re-derives basis and status so a
+    hand-edited file cannot claim a status its content does not support."""
+    problems = []
+    if not isinstance(brief, dict):
+        return ["brief is not an object"]
+    if brief.get("schema_version") != BRIEF_SCHEMA_VERSION:
+        problems.append("schema_version must be " + str(BRIEF_SCHEMA_VERSION))
+    if brief.get("status") not in BRIEF_STATUS:
+        problems.append("illegal status " + repr(brief.get("status")))
+    if brief.get("basis") not in BRIEF_BASIS:
+        problems.append("illegal basis " + repr(brief.get("basis")))
+    for field in ("enriched_at", "enrichment_source", "paper_captured_at"):
+        if brief.get(field) is not None and not isinstance(brief[field], str):
+            problems.append(field + " must be a string or null")
+    if brief.get("enrichment_source") not in ("agent", "mixed", None):
+        problems.append("enrichment_source must be agent, mixed, or null")
+    agent = brief.get("agent")
+    human = brief.get("human")
+    if not isinstance(agent, dict):
+        problems.append("agent must be an object")
+        agent = {}
+    if not isinstance(human, dict):
+        problems.append("human must be an object")
+        human = {}
+    ids = set()
+    try:
+        ids = validate_claim_lists(agent, human)
+    except BriefValidationError as exc:
+        problems.append(str(exc))
+    for where, block, allow_none in (("agent", agent, False), ("human", human, True)):
+        for field in AGENT_TEXT_FIELDS:
+            value = block.get(field)
+            if value is None:
+                if not allow_none:
+                    problems.append(where + "." + field + " must be a string")
+            elif not isinstance(value, str):
+                problems.append(where + "." + field + " must be a string")
+        questions = block.get("open_questions")
+        if questions is not None and (not isinstance(questions, list)
+                                      or any(not isinstance(q, str) for q in questions)):
+            problems.append(where + ".open_questions must be an array of strings")
+    related = agent.get("related_in_corpus")
+    if related is not None and not isinstance(related, list):
+        problems.append("agent.related_in_corpus must be an array")
+    elif isinstance(related, list):
+        for i, r in enumerate(related):
+            if (not isinstance(r, dict) or not present_str(r.get("id"))
+                    or not WID_RE.match(str(r.get("id")))):
+                problems.append("agent.related_in_corpus[{0}] needs an object "
+                                "with a W-id".format(i))
+            elif r.get("note") is not None and not isinstance(r.get("note"), str):
+                problems.append("agent.related_in_corpus[{0}].note must be a "
+                                "string".format(i))
+    if not problems:
+        if derive_basis(agent) != brief.get("basis"):
+            problems.append("basis does not match derive_basis")
+        if derive_status(agent, ids) != brief.get("status"):
+            problems.append("status does not match derive_status")
+    return problems
+
+
 INDEX_TEMPLATE = r"""> Generated by lit_fetch.py. Do not edit; the next capture regenerates this file.
 
 # Literature corpus (`.lit/`)
@@ -317,7 +565,7 @@ def atomic_write(path, text):
 
 def ensure_corpus(lit_dir):
     """Create the corpus directory tree on first use in a fresh --dir."""
-    for sub in ("papers", "graph", "findings"):
+    for sub in ("papers", "briefs", "graph", "findings"):
         (Path(lit_dir) / sub).mkdir(parents=True, exist_ok=True)
 
 
@@ -353,7 +601,9 @@ def write_one(payload, lit_dir, run, seed, source):
     The canonical id is only knowable after the fetch, so the skip happens
     here. An existing canonical record is never rewritten: its seed and
     captured_at stay untouched, and the run counts it as skipped.
-    Returns (record, wrote)."""
+    Returns (record, wrote). The first successful paper write also creates
+    the pending brief stub; a stub failure is surfaced as brief_stub_failed
+    and counted as a run failure (never silent), while the paper write stands."""
     record = normalize_work(payload, seed=seed, source=source)
     path = Path(lit_dir) / "papers" / (record["id"] + ".json")
     if path.exists():
@@ -361,6 +611,13 @@ def write_one(payload, lit_dir, run, seed, source):
         return record, False
     write_record(record, lit_dir)
     run.written += 1
+    try:
+        ensure_brief_stub(lit_dir, record["id"])
+    except Exception as exc:
+        print("brief_stub_failed: {0}: {1}".format(
+            record["id"], str(exc) or exc.__class__.__name__), file=sys.stderr)
+        run.fail("brief-stub:" + record["id"],
+                 str(exc) or exc.__class__.__name__)
     return record, True
 
 
@@ -388,6 +645,42 @@ def load_aliases(lit_dir):
 def save_aliases(lit_dir, aliases):
     atomic_write(Path(lit_dir) / "graph" / "aliases.json",
                  json.dumps(aliases, indent=2, sort_keys=True) + "\n")
+
+
+def remap_brief(lit_dir, old, new):
+    """Move the brief sidecar when a paper id merges old -> new.
+
+    Missing old brief: nothing to do. Missing new brief: write the old brief
+    under the new id and delete the old file. Both present: the newer-mtime
+    file's agent block wins, and non-empty human fields from the other file
+    fill empty slots of the winner's human block (never drop non-empty human;
+    an exact conflict keeps the newer). The old file is removed either way.
+    paper_captured_at is refreshed from the paper record when it exists."""
+    old_p, new_p = brief_path(lit_dir, old), brief_path(lit_dir, new)
+    if not old_p.exists():
+        return
+    old_b = load_brief(lit_dir, old)
+    new_b = load_brief(lit_dir, new)
+    if new_b is None:
+        winner = old_b
+    else:
+        winner, loser = ((old_b, new_b)
+                         if old_p.stat().st_mtime >= new_p.stat().st_mtime
+                         else (new_b, old_b))
+        human = dict(winner.get("human") or empty_human_block())
+        for key, value in (loser.get("human") or {}).items():
+            if value in (None, "", []) or human.get(key) not in (None, "", []):
+                continue
+            human[key] = value
+        winner = dict(winner)
+        winner["human"] = human
+    paper_p = Path(lit_dir) / "papers" / (new + ".json")
+    if paper_p.exists():
+        winner["paper_captured_at"] = paper_capture_stamp(
+            json.loads(paper_p.read_text(encoding="utf-8")))
+    winner["id"] = new
+    atomic_write(new_p, json.dumps(winner, indent=2, ensure_ascii=False) + "\n")
+    old_p.unlink()
 
 
 def write_edges(lit_dir, new_edges):
@@ -430,6 +723,45 @@ def regenerate_index(lit_dir):
                         len(boundary_nodes(lit_dir)), count_inbox(lit_dir),
                         now_iso())
     atomic_write(Path(lit_dir) / "SKILL.md", text)
+
+
+# ---------------------------------------------------------------------------
+# brief sidecar IO (.lit/briefs/<W-id>.json)
+# ---------------------------------------------------------------------------
+
+def briefs_dir(lit_dir):
+    return Path(lit_dir) / "briefs"
+
+
+def brief_path(lit_dir, wid):
+    return briefs_dir(lit_dir) / (wid + ".json")
+
+
+def load_brief(lit_dir, wid):
+    """The stored brief, or None when absent. Raises on corrupt JSON so
+    callers fail loudly instead of silently dropping a brief."""
+    p = brief_path(lit_dir, wid)
+    if not p.exists():
+        return None
+    return json.loads(p.read_text(encoding="utf-8"))
+
+
+def ensure_brief_stub(lit_dir, wid):
+    """Create the pending stub when the brief file is missing; leave any
+    existing brief untouched. wid must already be the canonical id.
+    paper_captured_at is copied from the paper's capture stamp when the paper
+    record exists and carries one. Returns True when a stub was created."""
+    p = brief_path(lit_dir, wid)
+    if p.exists():
+        return False
+    paper_p = Path(lit_dir) / "papers" / (wid + ".json")
+    captured = None
+    if paper_p.exists():
+        captured = paper_capture_stamp(
+            json.loads(paper_p.read_text(encoding="utf-8")))
+    atomic_write(p, json.dumps(new_brief(wid, captured),
+                               indent=2, ensure_ascii=False) + "\n")
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -566,6 +898,11 @@ def capture_identifier(identifier, is_wid_form, lit_dir, api_key, run):
         aliases[requested] = canonical
         save_aliases(lit_dir, aliases)
         print("merge: {0} -> {1}".format(requested, canonical))
+        try:
+            remap_brief(lit_dir, requested, canonical)
+        except Exception as exc:
+            run.fail("brief-remap:" + requested,
+                     str(exc) or exc.__class__.__name__)
     return promote_payload(payload, lit_dir, run, seed=True, source="capture")
 
 
@@ -646,6 +983,11 @@ def verb_ids(raw_ids, lit_dir, api_key, seed_flag, run):
                 aliases[wid] = canonical
                 save_aliases(lit_dir, aliases)
                 print("merge: {0} -> {1}".format(wid, canonical))
+                try:
+                    remap_brief(lit_dir, wid, canonical)
+                except Exception as exc:
+                    run.fail("brief-remap:" + wid,
+                             str(exc) or exc.__class__.__name__)
             record, wrote = write_one(payload, lit_dir, run,
                                       seed=seed_flag, source="fetch")
             records.append(record)
@@ -801,7 +1143,197 @@ def verb_check(api_key):
     return 0 if ok else 1
 
 
-VERB_FLAGS = ("doi", "openalex", "arxiv", "title", "ids", "inbox", "status", "check")
+def _read_brief_json(path):
+    """Parsed brief JSON from a path, or None when unreadable or malformed."""
+    try:
+        brief = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError, OSError):
+        return None
+    return brief if isinstance(brief, dict) else None
+
+
+def verb_enrich_pending(lit_dir):
+    """List briefs awaiting enrichment as JSONL, one object per line:
+    {"id", "status", "basis"} for pending and partial; unreadable or malformed
+    files print {"id", "status": "invalid", "basis": null} (list label only).
+    ready and stale rows are skipped. Read-only; empty corpus exits 0."""
+    d = briefs_dir(lit_dir)
+    if not d.is_dir():
+        return 0
+    aliases = load_aliases(lit_dir)
+    for p in sorted(d.glob("*.json")):
+        wid = resolve_alias(p.stem, aliases)
+        brief = _read_brief_json(p)
+        status = brief.get("status") if brief else None
+        if status in ("pending", "partial"):
+            print(json.dumps({"id": wid, "status": status,
+                              "basis": brief.get("basis")}))
+        elif status not in BRIEF_STATUS:
+            print(json.dumps({"id": wid, "status": "invalid", "basis": None}))
+    return 0
+
+
+def verb_brief_status(lit_dir, wid):
+    """Brief counts by status and basis; with a W-id, print that brief's JSON.
+    Read-only."""
+    aliases = load_aliases(lit_dir)
+    if wid and wid != "all":
+        canonical = resolve_alias(bare_wid(wid), aliases)
+        brief = load_brief(lit_dir, canonical)
+        if brief is None:
+            print("error: no brief for {0}".format(canonical), file=sys.stderr)
+            return 1
+        print(json.dumps(brief, indent=2, ensure_ascii=False))
+        return 0
+    d = briefs_dir(lit_dir)
+    status_counts, basis_counts, total = {}, {}, 0
+    if d.is_dir():
+        for p in sorted(d.glob("*.json")):
+            total += 1
+            brief = _read_brief_json(p)
+            status = brief.get("status") if brief else None
+            basis = brief.get("basis") if brief else None
+            if status not in BRIEF_STATUS:
+                status = "invalid"
+            if basis not in BRIEF_BASIS:
+                basis = "invalid"
+            status_counts[status] = status_counts.get(status, 0) + 1
+            basis_counts[basis] = basis_counts.get(basis, 0) + 1
+    print("briefs=" + str(total))
+    for key in BRIEF_STATUS + ("invalid",):
+        print("status {0}={1}".format(key, status_counts.get(key, 0)))
+    for key in BRIEF_BASIS + ("invalid",):
+        print("basis {0}={1}".format(key, basis_counts.get(key, 0)))
+    return 0
+
+
+def _check_brief_file(path, label):
+    """Print OK/FAIL for one brief file; True when valid."""
+    brief = _read_brief_json(path)
+    if brief is None:
+        try:
+            json.loads(path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            print("FAIL {0}: unreadable ({1})".format(label, exc))
+            return False
+        print("FAIL {0}: brief is not an object".format(label))
+        return False
+    problems = validate_brief(brief)
+    for problem in problems:
+        print("FAIL {0}: {1}".format(label, problem))
+    if not problems:
+        print("OK " + str(label))
+    return not problems
+
+
+def verb_brief_check(lit_dir, wid):
+    """Validate one brief (--brief-check W...) or every brief under briefs/.
+    Returns 1 when any brief is invalid."""
+    aliases = load_aliases(lit_dir)
+    d = briefs_dir(lit_dir)
+    if wid and wid != "all":
+        canonical = resolve_alias(bare_wid(wid), aliases)
+        p = brief_path(lit_dir, canonical)
+        if not p.exists():
+            print("error: no brief for {0}".format(canonical), file=sys.stderr)
+            return 1
+        return 0 if _check_brief_file(p, canonical) else 1
+    ok = True
+    if d.is_dir():
+        for p in sorted(d.glob("*.json")):
+            if not _check_brief_file(p, resolve_alias(p.stem, aliases)):
+                ok = False
+    return 0 if ok else 1
+
+
+def verb_brief_write(lit_dir, raw_id, payload_path, human_flag):
+    """Validate a brief payload and atomically write it.
+
+    --id resolves through the paper alias table and must have a paper record.
+    The payload's agent object is required and replaces the stored agent
+    block. The human block is kept unless --human, in which case the payload
+    must carry a human object and replaces. id, schema_version, status,
+    basis, enriched_at, enrichment_source, and paper_captured_at are
+    script-owned: payload values for them are ignored, status and basis are
+    derived from content. On any validation failure the previous brief file
+    is left untouched and no temp file is left behind."""
+    aliases = load_aliases(lit_dir)
+    wid = resolve_alias(bare_wid(raw_id), aliases)
+    paper_p = Path(lit_dir) / "papers" / (wid + ".json")
+    if not paper_p.exists():
+        print("error: no paper record for {0}; fetch the paper before "
+              "writing its brief".format(wid), file=sys.stderr)
+        return 1
+    try:
+        payload = json.loads(Path(payload_path).read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError, OSError) as exc:
+        print("error: cannot read payload {0}: {1}".format(payload_path, exc),
+              file=sys.stderr)
+        return 1
+    if not isinstance(payload, dict) or not isinstance(payload.get("agent"), dict):
+        print("error: brief payload needs an agent object", file=sys.stderr)
+        return 1
+    existing = load_brief(lit_dir, wid)
+    if human_flag:
+        if not isinstance(payload.get("human"), dict):
+            print("error: --human needs a human object in the payload",
+                  file=sys.stderr)
+            return 1
+        # Normalize onto the full human shell so missing keys stay null/[]
+        # (payload may only carry the fields the agent wants to set).
+        human = dict(empty_human_block())
+        human.update(payload["human"])
+    else:
+        human = (existing or {}).get("human") or empty_human_block()
+    agent = payload["agent"]
+    try:
+        ids = validate_claim_lists(agent, human)
+    except BriefValidationError as exc:
+        print("error: {0}".format(exc), file=sys.stderr)
+        return 1
+    paper = json.loads(paper_p.read_text(encoding="utf-8"))
+    brief = {"id": wid,
+             "schema_version": BRIEF_SCHEMA_VERSION,
+             "status": derive_status(agent, ids),
+             "basis": derive_basis(agent),
+             "enriched_at": now_iso(),
+             "enrichment_source": "mixed" if human_flag else "agent",
+             "paper_captured_at": paper_capture_stamp(paper),
+             "agent": agent,
+             "human": human}
+    problems = validate_brief(brief)
+    if problems:
+        for problem in problems:
+            print("error: {0}".format(problem), file=sys.stderr)
+        return 1
+    atomic_write(brief_path(lit_dir, wid),
+                 json.dumps(brief, indent=2, ensure_ascii=False) + "\n")
+    print("brief written: {0} status={1} basis={2}".format(
+        wid, brief["status"], brief["basis"]))
+    return 0
+
+
+def verb_brief_restub(lit_dir, raw_id):
+    """Reset the agent shell and script-owned enrich fields of one brief to
+    the pending stub shape. The human block and an already-set
+    paper_captured_at are kept."""
+    aliases = load_aliases(lit_dir)
+    wid = resolve_alias(bare_wid(raw_id), aliases)
+    existing = load_brief(lit_dir, wid)
+    if existing is None:
+        print("error: no brief for {0}".format(wid), file=sys.stderr)
+        return 1
+    brief = new_brief(wid, existing.get("paper_captured_at"))
+    brief["human"] = existing.get("human") or empty_human_block()
+    atomic_write(brief_path(lit_dir, wid),
+                 json.dumps(brief, indent=2, ensure_ascii=False) + "\n")
+    print("brief restubbed: {0}".format(wid))
+    return 0
+
+
+VERB_FLAGS = ("doi", "openalex", "arxiv", "title", "ids", "inbox", "status", "check",
+              "enrich_pending", "brief_status", "brief_check",
+              "brief_write", "brief_restub")
 
 
 def build_parser():
@@ -818,6 +1350,20 @@ def build_parser():
     p.add_argument("--inbox", action="store_true", help="triage .lit/inbox.jsonl")
     p.add_argument("--status", action="store_true", help="print corpus summary")
     p.add_argument("--check", action="store_true", help="live smoke test of endpoint forms")
+    p.add_argument("--enrich-pending", action="store_true",
+                   help="list briefs awaiting enrichment (pending and partial)")
+    p.add_argument("--brief-status", nargs="?", const="all", metavar="W-ID",
+                   help="brief counts by status and basis; optional W-id detail")
+    p.add_argument("--brief-check", nargs="?", const="all", metavar="W-ID",
+                   help="validate one brief or all; non-zero on invalid")
+    p.add_argument("--brief-write", action="store_true",
+                   help="write the brief for --id from the --file payload")
+    p.add_argument("--brief-restub", action="store_true",
+                   help="reset the --id brief agent shell to pending")
+    p.add_argument("--id", help="W-id target of --brief-write/--brief-restub")
+    p.add_argument("--file", help="brief payload JSON path for --brief-write")
+    p.add_argument("--human", action="store_true",
+                   help="--brief-write also replaces the human block from the payload")
     p.add_argument("--dir", default=".lit", help="corpus root (default .lit)")
     p.add_argument("--api-key", default=os.environ.get("OPENALEX_API_KEY"),
                    help="OpenAlex API key (default env OPENALEX_API_KEY)")
@@ -837,7 +1383,9 @@ def pick_verb(args):
         names.remove("title")   # --title is the required modifier of --arxiv
     if len(names) != 1:
         print("error: give exactly one of --doi/--openalex/--arxiv/--title/"
-              "--ids/--inbox/--status/--check", file=sys.stderr)
+              "--ids/--inbox/--status/--check/--enrich-pending/"
+              "--brief-status/--brief-check/--brief-write/--brief-restub",
+              file=sys.stderr)
         sys.exit(2)
     return names[0]
 
@@ -854,6 +1402,13 @@ def validate_verb(args, verb):
             print("error: --openalex expects a W-id like W2741809807",
                   file=sys.stderr)
             sys.exit(2)
+    if verb in ("brief_write", "brief_restub"):
+        if not args.id or not WID_RE.match(bare_wid(args.id)):
+            print("error: --id expects a W-id like W2741809807", file=sys.stderr)
+            sys.exit(2)
+    if verb == "brief_write" and not args.file:
+        print("error: --brief-write needs --file <payload.json>", file=sys.stderr)
+        sys.exit(2)
 
 
 def main(argv=None):
@@ -906,6 +1461,16 @@ def main(argv=None):
             return verb_status(lit_dir)
         elif verb == "check":
             return verb_check(api_key)
+        elif verb == "enrich_pending":
+            return verb_enrich_pending(lit_dir)
+        elif verb == "brief_status":
+            return verb_brief_status(lit_dir, args.brief_status)
+        elif verb == "brief_check":
+            return verb_brief_check(lit_dir, args.brief_check)
+        elif verb == "brief_write":
+            return verb_brief_write(lit_dir, args.id, args.file, args.human)
+        elif verb == "brief_restub":
+            return verb_brief_restub(lit_dir, args.id)
     except BudgetExhausted:
         print(run.summary())
         print("budget exhausted; completed writes stand")
