@@ -919,7 +919,10 @@ def verb_title(title, author, year, lit_dir, api_key, run):
     afterwards: written now, or already in the corpus via skip-if-exists.
 
     On no verified hit: writes nothing, counts one failure, and prints the top
-    candidates for a human decision."""
+    candidates for a human decision. Either way, when the response carried
+    x-ratelimit-remaining 0 the call raises BudgetExhausted after the
+    response is handled (header-after-success, as in verb_ids), so loops stop
+    before the next budgeted call."""
     warn_keyless("title search", api_key)
     status, headers, body = http_get(search_url(title, api_key))
     candidates = parse_envelope(body)
@@ -931,9 +934,11 @@ def verb_title(title, author, year, lit_dir, api_key, run):
             print("  {0}  {1}  {2}".format(bare_wid(c.get("id", "W?")),
                                            c.get("publication_year"),
                                            c.get("display_name")))
-        return False
-    promote_payload(hit, lit_dir, run, seed=True, source="capture")
-    return True
+    else:
+        promote_payload(hit, lit_dir, run, seed=True, source="capture")
+    if headers.get("x-ratelimit-remaining") == "0":
+        raise BudgetExhausted("x-ratelimit-remaining 0 after title search")
+    return hit is not None
 
 
 def parse_ids(raw):

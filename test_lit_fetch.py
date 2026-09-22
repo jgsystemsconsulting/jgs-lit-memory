@@ -1421,6 +1421,127 @@ def test_inbox_keyed_backoff_writes_no_key():
         assert "SECRET123" not in out2.getvalue()
 
 
+def _title_search_handler(headers):
+    """fake_http handler for verified title search: parses search= from the
+    URL, answers with the one make_payload whose name matches, and attaches
+    the given headers to every response."""
+    def handler(url):
+        q = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
+        wid = q["search"][0].split()[-1]          # "Paper W7000000001" -> W-id
+        return (200, dict(headers), envelope([make_payload(wid)]))
+    return handler
+
+
+def test_missing_remaining_header_does_not_stop():
+    """T4. (a) No header: verb_title returns True and verb_inbox drains two
+    entries. (b) Decision 4: a free singleton ignores remaining 0. (c)
+    Decision 3: singleton --title on remaining 0 writes the record, exits 1
+    with the budget line, and a re-run skips it as already present."""
+    with tempfile.TemporaryDirectory() as tmp:
+        lit = pathlib.Path(tmp) / ".lit"
+        lit_fetch.ensure_corpus(lit)
+        # (a) headers {} never trips the stop
+        with fake_http(_title_search_handler({})):
+            with contextlib.redirect_stdout(io.StringIO()), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                run = lit_fetch.Run()
+                wrote = lit_fetch.verb_title("Paper W7000000010", None, None,
+                                             lit, None, run)
+        assert wrote is True and run.written == 1
+        entries = [
+            {"ref": "title:Paper W7000000011", "title": "Paper W7000000011",
+             "note": "a", "added_at": "2026-09-22T10:00:00Z"},
+            {"ref": "title:Paper W7000000012", "title": "Paper W7000000012",
+             "note": "b", "added_at": "2026-09-22T10:01:00Z"},
+        ]
+        inbox = lit / "inbox.jsonl"
+        inbox.write_text("".join(json.dumps(e) + "\n" for e in entries),
+                         encoding="utf-8")
+        with fake_http(_title_search_handler({})) as fake:
+            with contextlib.redirect_stdout(io.StringIO()), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                run2 = lit_fetch.Run()
+                lit_fetch.verb_inbox(lit, None, run2)
+        assert len(fake.calls) == 2 and run2.written == 2 and run2.failed == 0
+        assert inbox.read_text(encoding="utf-8") == ""
+
+        # (b) decision 4: capture_identifier ignores remaining 0 (free call)
+        def singleton(url):
+            assert "/works/W9999999999?" in url
+            return (200, {"x-ratelimit-remaining": "0"},
+                    json.dumps(make_payload("W9999999999")))
+
+        with fake_http(singleton):
+            with contextlib.redirect_stdout(io.StringIO()):
+                run3 = lit_fetch.Run()
+                lit_fetch.capture_identifier("W9999999999", True, lit, None, run3)
+        assert run3.written == 1
+        assert (lit / "papers" / "W9999999999.json").exists()
+
+        # (c) decision 3: singleton --title writes, then exits 1 with the budget line
+        out = io.StringIO()
+        with fake_http(_title_search_handler({"x-ratelimit-remaining": "0"})):
+            with contextlib.redirect_stdout(out):
+                rc = lit_fetch.main(["--title", "Paper W8888888888", "--dir", str(lit),
+                                     "--api-key", "SECRET123"])
+        assert rc == 1
+        assert "budget exhausted; completed writes stand" in out.getvalue()
+        assert (lit / "papers" / "W8888888888.json").exists()
+        out2 = io.StringIO()
+        with fake_http(_title_search_handler({"x-ratelimit-remaining": "9999"})):
+            with contextlib.redirect_stdout(out2):
+                rc2 = lit_fetch.main(["--title", "Paper W8888888888", "--dir", str(lit),
+                                      "--api-key", "SECRET123"])
+        assert rc2 == 0
+        assert "written=0 skipped=1 failed=0" in out2.getvalue()
+
+
+def test_inbox_budget_abort_freezes_queue():
+    """T3. Remaining 0 on the first handled title search: no second call,
+    the promoted record and a current index stand, the queue file is
+    byte-identical, exit 1 with the budget line. A re-run with budget dedupes
+    the first entry, resolves the second, and empties the queue."""
+    with tempfile.TemporaryDirectory() as tmp:
+        lit = pathlib.Path(tmp) / ".lit"
+        lit_fetch.ensure_corpus(lit)
+        entries = [
+            {"ref": "title:Paper W7000000001", "title": "Paper W7000000001",
+             "note": "first", "added_at": "2026-09-22T10:00:00Z"},
+            {"ref": "title:Paper W7000000002", "title": "Paper W7000000002",
+             "note": "second", "added_at": "2026-09-22T10:01:00Z"},
+        ]
+        inbox = lit / "inbox.jsonl"
+        inbox.write_text("".join(json.dumps(e) + "\n" for e in entries),
+                         encoding="utf-8")
+        before = inbox.read_bytes()
+
+        out = io.StringIO()
+        with fake_http(_title_search_handler({"x-ratelimit-remaining": "0"})) as fake:
+            with contextlib.redirect_stdout(out), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                rc = lit_fetch.main(["--inbox", "--dir", str(lit)])
+        assert rc == 1
+        assert "budget exhausted; completed writes stand" in out.getvalue()
+        assert len(fake.calls) == 1                     # second entry never called
+        assert (lit / "papers" / "W7000000001.json").exists()
+        assert not (lit / "papers" / "W7000000002.json").exists()
+        assert inbox.read_bytes() == before             # queue frozen, byte for byte
+        index = (lit / "SKILL.md").read_text(encoding="utf-8")
+        assert "| papers (full records) | 1 |" in index  # regenerated inside promote_payload
+
+        # re-run with budget: first entry dedupes against the corpus, second resolves
+        out2 = io.StringIO()
+        with fake_http(_title_search_handler({"x-ratelimit-remaining": "9999"})) as fake2:
+            with contextlib.redirect_stdout(out2), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                rc2 = lit_fetch.main(["--inbox", "--dir", str(lit)])
+        assert rc2 == 0
+        assert len(fake2.calls) == 1
+        assert "written=1 skipped=1 failed=0" in out2.getvalue()
+        assert (lit / "papers" / "W7000000002.json").exists()
+        assert inbox.read_text(encoding="utf-8") == ""
+
+
 CHECKS = [
     test_fold,
     test_bare_ids,
@@ -1454,6 +1575,8 @@ CHECKS = [
     test_check_forms_fake,
     test_backoff_exhausted_redacts_key,
     test_inbox_keyed_backoff_writes_no_key,
+    test_missing_remaining_header_does_not_stop,
+    test_inbox_budget_abort_freezes_queue,
     test_present_rules,
     test_new_brief_shape,
     test_paper_capture_stamp,
