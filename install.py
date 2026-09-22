@@ -158,6 +158,7 @@ def install_gemini(src: Path, dest: Path, *, dry: bool) -> None:
     dest.mkdir(parents=True)
     (dest / "GEMINI.md").write_text(body, encoding="utf-8")
     shutil.copy2(src / "SKILL.md", dest / "SKILL.md")
+    shutil.copy2(src / "lit_fetch.py", dest / "lit_fetch.py")
     (dest / "gemini-extension.json").write_text(
         json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
     )
