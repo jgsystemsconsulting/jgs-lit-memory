@@ -1,5 +1,5 @@
 {
   "name": "jgs-lit-memory",
   "version": "1.2.0",
-  "description": "Capture scholarly papers from OpenAlex into a per-project local corpus with the lit-capture skill for coding agents."
+  "description": "Capture scholarly papers from OpenAlex into a per-project local corpus of records, citation edges, and analysis briefs, with the lit-capture skill for coding agents."
 }
