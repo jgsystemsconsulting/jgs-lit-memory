@@ -106,7 +106,7 @@ One resolution verb per invocation.
 | `--check` | Live smoke test of the four endpoint forms. |
 | `--enrich-pending` | List briefs awaiting enrichment: `pending` and `partial` as JSONL rows; unreadable files are labeled `invalid`. Read-only. |
 | `--brief-status [W-id]` | Brief counts by status and basis; with an id, print that brief's JSON. Read-only. |
-| `--brief-check [W-id]` | Validate one brief or all (schema, claim graph, derived fields). Exit 1 when invalid. |
+| `--brief-check [W-id]` | Validate one brief or all (schema, id vs filename, claim graph, derived fields). Exit 1 when invalid. |
 | `--brief-write --id <W-id> --file <payload.json> [--human]` | Validate and atomically write a brief. Replaces the `agent` block, keeps `human` unless `--human`, derives `status` and `basis`. |
 | `--brief-restub --id <W-id>` | Reset the brief's agent shell and enrich stamps to pending. Keeps `human`. |
 
