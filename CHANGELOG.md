@@ -8,11 +8,32 @@ Single-source history for jgs-lit-memory. Tags are three-component semver
 
 ## [Unreleased]
 
-### Added
+## [1.2.0] - 2026-09-22
 
+OpenAlex-unavailable fallback. The lit-capture skill now prescribes what to
+do when OpenAlex is unreachable, rate-limited, or out of budget: diagnose
+with `--check`, suggest a free OpenAlex API key, and fetch the paper
+directly from the open web until OpenAlex answers again. Corpus identity
+stays intact: no invented W-ids, offline inbox queue in the meantime,
+idempotent re-run on recovery.
+
+- New "When OpenAlex is unavailable" section in the lit-capture skill:
+  `--check` diagnosis, API-key suggestion, direct web fallback (arXiv PDF,
+  arXiv Atom metadata, DOI landing page, Crossref), offline inbox queue
+  instead of hand-written records, `--inbox` plus `--enrich-pending` on
+  recovery
 - Favicon: the landing page ships `docs/favicon.svg` (three-layer mark on a
   paper badge) linked from the page head, replacing the empty `data:` stub.
-  Meets `RR-B-20` as of release-repo-standard 1.15.
+  Meets `RR-B-20` as of release-repo-standard 1.15
+- lit_fetch stops inbox and title runs when a response carries
+  `x-ratelimit-remaining: 0`; completed writes stand, remaining work fails
+  with a budget reason
+- lit_fetch redacts the `api_key` query value in BackoffExhausted messages,
+  so failure text is safe to print and store in the corpus
+- Docs: README mirrors the reader contract, the landing page leads with the
+  three-layer product (verb table, limits), skill-usage gains an OpenAlex
+  API key setup section; maintainer-only trees (docs/superpowers, .zcode)
+  are gitignored
 
 ## [1.1.0] - 2026-09-18
 
