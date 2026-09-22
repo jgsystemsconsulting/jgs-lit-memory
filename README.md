@@ -26,7 +26,8 @@ Copilot.
 
 - Python 3.9+ (standard library only; no pip packages)
 - Network access to `api.openalex.org`; an OpenAlex API key is optional
-  (singleton DOI and W-id lookups are free, budgeted calls warn without one)
+  (singleton DOI and W-id lookups are free, budgeted calls warn without one).
+  Setup: [docs/skill-usage.md](docs/skill-usage.md#the-openalex-api-key)
 
 ## Install
 
@@ -170,7 +171,8 @@ python skills/lit-capture/lit_fetch.py --check  # live smoke test of endpoint fo
 python scripts/check_release.py             # release gate
 ```
 
-Set `OPENALEX_API_KEY` for the full daily budget. Get a key from OpenAlex.
+Set `OPENALEX_API_KEY` for the full daily budget. Where to get one and how
+to set it: [docs/skill-usage.md](docs/skill-usage.md#the-openalex-api-key).
 
 ## Licence
 

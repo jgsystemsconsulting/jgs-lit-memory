@@ -8,7 +8,8 @@
 - Python 3.9+ on PATH (standard library only; no pip packages).
 - Network access to `api.openalex.org`. Singleton DOI and W-id lookups are
   free. Title searches, batches, and inbox triage draw on a daily budget;
-  set `OPENALEX_API_KEY` (get a key from OpenAlex) for the full budget.
+  set `OPENALEX_API_KEY` for the full budget (setup:
+  [The OpenAlex API key](#the-openalex-api-key)).
 - A host that can load Agent Skills (`SKILL.md`). ZCode is the default
   install target. Claude Code, Copilot CLI, OpenClaw, and Codex read the
   folder natively; Gemini and Cursor use the installer transform. See
@@ -27,6 +28,44 @@ python install.py --list-agents
 ```
 
 Restart the agent session so it discovers the skill.
+
+## The OpenAlex API key
+
+The script runs without a key. Singleton DOI and W-id lookups are free, and
+budgeted calls (title searches, batches, inbox triage with search entries)
+draw on a small keyless daily budget, with a warning printed before the first
+budgeted call. A key raises the daily budget tenfold and lets you track
+usage.
+
+To get and install one:
+
+1. Sign in at [openalex.org](https://openalex.org) (email or ORCID; the
+   account is free).
+2. Copy your key at [openalex.org/settings/api](https://openalex.org/settings/api).
+3. Set it as an environment variable named `OPENALEX_API_KEY`:
+
+   ```bash
+   setx OPENALEX_API_KEY "<key>"    # Windows: persistent user variable; new processes only
+   export OPENALEX_API_KEY="<key>"  # macOS/Linux: add the line to .bashrc or .zshrc to persist
+   ```
+
+Processes already running keep the environment they started with, so open a
+new terminal or restart the agent session afterwards. Then verify:
+
+```bash
+python "$HOME/.zcode/skills/lit-capture/lit_fetch.py" --check
+```
+
+`--check` smoke-tests all four endpoint forms with the key active. Your daily
+usage is visible at [openalex.org/settings/usage](https://openalex.org/settings/usage).
+
+The key is optional per project and per machine: set it once per account
+where you research, and every repo running `lit_fetch.py` picks it up. It is
+read from the `OPENALEX_API_KEY` environment variable or accepted by the
+`--api-key` flag, and it is never written into the corpus. The key doubles as
+your openalex.org sign-in credential, so treat it like a password: never
+commit it, and expect rotating it (Settings, API key) to end other sessions
+immediately. See [SECURITY.md](../SECURITY.md).
 
 ## Invoke / first run
 
