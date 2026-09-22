@@ -7,3 +7,7 @@ __pycache__/
 .tmp-install-check/
 release-notes.generated.md
 .worktrees/
+
+# Maintainer-only trees (keep/drop decision 2026-09-22: gitignore, files stay on disk)
+docs/superpowers/
+.zcode/
