@@ -50,12 +50,16 @@ python install.py --dry-run
 python install.py --list-agents
 ```
 
-Wrappers: `install.sh`, `install.ps1`. The installer copies the whole skill
-folder, so `SKILL.md` and `lit_fetch.py` land together; edits happen in this
-repo and get re-installed. An existing flat mirror (for example
-`~/.claude/skills/lit-capture/`) keeps working as the documented fallback.
-Per-host paths: [docs/other-agents.md](docs/other-agents.md). Restart the
-agent session after installing.
+Wrappers: `install.sh`, `install.ps1`. Native agents (ZCode, Claude Code,
+OpenClaw, Copilot CLI, Codex) get the whole skill folder, so `SKILL.md` and
+`lit_fetch.py` land together. Gemini gets an extension directory with
+`GEMINI.md`, `SKILL.md`, `gemini-extension.json`, and `lit_fetch.py`. Cursor
+gets one `.mdc` rule file only; the script stays in the clone or a native
+install. Edits happen in this repo and get re-installed. An existing flat
+mirror (for example `~/.claude/skills/lit-capture/`) keeps working as the
+documented fallback. Per-host paths:
+[docs/other-agents.md](docs/other-agents.md). Restart the agent session after
+installing.
 
 ### Install with your AI agent
 

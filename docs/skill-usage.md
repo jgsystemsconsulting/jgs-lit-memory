@@ -12,7 +12,8 @@
   [The OpenAlex API key](#the-openalex-api-key)).
 - A host that can load Agent Skills (`SKILL.md`). ZCode is the default
   install target. Claude Code, Copilot CLI, OpenClaw, and Codex read the
-  folder natively; Gemini and Cursor use the installer transform. See
+  folder natively. Gemini gets a small extension install that still includes
+  `lit_fetch.py`. Cursor uses the installer transform (rule file only). See
   [other-agents.md](other-agents.md).
 - A project repo you run research conversations in. The `.lit/` corpus lives
   at that repo's root and is git-tracked there.

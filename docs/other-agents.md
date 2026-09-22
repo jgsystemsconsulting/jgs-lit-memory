@@ -45,8 +45,11 @@ the repo you want rules in.
 Native agents get the whole skill folder (`SKILL.md` plus
 `lit_fetch.py`). Transform agents (Cursor) get `SKILL.md` inlined into one
 `.mdc` rule; the script is not transformed, so Cursor installs reference the
-cloned repo's copy or a native install elsewhere. Gemini gets a small
-extension directory with `GEMINI.md` plus `gemini-extension.json`.
+cloned repo's copy or a native install elsewhere. Gemini gets an extension
+directory with `GEMINI.md`, `SKILL.md`, `gemini-extension.json`, and
+`lit_fetch.py`; the installed script lives at
+`~/.gemini/extensions/jgs-lit-capture/lit_fetch.py` (or
+`DIR/jgs-lit-capture/lit_fetch.py` under `--dest DIR`).
 
 Existing `--dest` and `--link` flags still work. `--dest` overrides the
 dest root for the chosen agent. For `zcode`, `--dest DIR` writes
