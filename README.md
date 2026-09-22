@@ -11,7 +11,7 @@
   <img src="https://img.shields.io/badge/tested%20with-Claude%20Code-8A2BE2" alt="Tested with Claude Code">
 </p>
 
-**Capture the papers once. Query the corpus, not the internet, next time.**
+**Capture the papers once: one record, the citation graph, and an analysis brief per paper. Query the corpus, not the internet, next time.**
 
 `lit_fetch.py` captures scholarly papers from OpenAlex into a per-project
 `.lit/` corpus: one normalized JSON record per paper, citation edges between
@@ -21,6 +21,15 @@ conversations, so the next session queries the local corpus instead of
 re-searching the same papers. Built for people who do literature-heavy work
 inside coding agents: ZCode, Claude Code, Cursor, Codex, Gemini CLI, and
 Copilot.
+
+## Why
+
+Research conversations re-find the same papers every week. The corpus answers
+"do we have it?" from one normalized record per paper under `papers/` and
+"who cites whom?" from `graph/edges.jsonl`. Neither layer records claims,
+methods, limits, or why a paper matters here. Paper briefs do: one analysis
+sidecar per paper at `.lit/briefs/<W-id>.json`. Full pitch:
+[jgsystemsconsulting.github.io/jgs-lit-memory](https://jgsystemsconsulting.github.io/jgs-lit-memory/).
 
 ## Prerequisites
 
@@ -68,6 +77,7 @@ Do this in order.
     python install.py --agent claude   # Claude Code → ~/.claude/skills/jgs/lit-capture/
   Use --agent all only if the user wants every supported host. Wrappers: install.sh, install.ps1.
 - Verify: the installed folder contains SKILL.md and lit_fetch.py (1 skill, matches SKILLS.md).
+- After capture, the skill drains the brief queue with --enrich-pending and writes briefs through the script (--brief-write); see docs/skill-usage.md.
 - Note the MIT licence in LICENSE.
 
 Finish by telling the user to fully restart the agent session so it
@@ -118,6 +128,11 @@ Direct script use, one resolution verb per invocation:
 | `--inbox` | Triage `.lit/inbox.jsonl`: dedupe, resolve, rewrite the queue once. Failures stay queued with their reason. |
 | `--status` | Corpus summary. Read-only. |
 | `--check` | Live smoke test of the four endpoint forms. |
+| `--enrich-pending` | List briefs awaiting enrichment: `pending` and `partial` as JSONL rows; unreadable files are labeled `invalid`. Read-only. |
+| `--brief-status [W-id]` | Brief counts by status and basis; with an id, print that brief's JSON. Read-only. |
+| `--brief-check [W-id]` | Validate one brief or all (schema, claim graph, derived fields). Exit 1 when invalid. |
+| `--brief-write --id <W-id> --file <payload.json> [--human]` | Validate and atomically write a brief. Replaces the `agent` block, keeps `human` unless `--human`, derives `status` and `basis`. |
+| `--brief-restub --id <W-id>` | Reset the brief's agent shell and enrich stamps to pending. Keeps `human`. |
 
 Common flags: `--dir <path>` (default `.lit`), `--api-key <key>` (default env
 `OPENALEX_API_KEY`), `--seed`, `--author`, `--year`. Exit codes: 0 success or
@@ -133,6 +148,7 @@ Skill index: [SKILLS.md](SKILLS.md).
 ```
 .lit/
   papers/<W-id>.json      one normalized record per paper
+  briefs/<W-id>.json      analysis sidecar per paper (agent-authored, script-validated)
   graph/edges.jsonl       {"source": citing W-id, "target": cited W-id}, one per line
   graph/aliases.json      {"alias W-id": "canonical W-id"} recorded on 301 merges
   findings/<YYYY>-<slug>.md  optional human notes
