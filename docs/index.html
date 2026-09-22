@@ -7,17 +7,17 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="dark">
 <title>jgs-lit-memory: local literature memory for coding agents</title>
-<meta name="description" content="Capture scholarly papers from OpenAlex into a .lit corpus with the lit-capture skill. One record per paper, citation edges, offline inbox, six agent hosts.">
+<meta name="description" content="jgs-lit-memory keeps paper records, citation edges, and agent-authored analysis briefs in a git-tracked .lit corpus. Capture once, then query the corpus, not the internet.">
 <link rel="canonical" href="https://jgsystemsconsulting.github.io/jgs-lit-memory/">
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="site.css">
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://jgsystemsconsulting.github.io/jgs-lit-memory/">
 <meta property="og:title" content="jgs-lit-memory: local literature memory for coding agents">
-<meta property="og:description" content="Capture scholarly papers from OpenAlex into a .lit corpus with the lit-capture skill. One record per paper, citation edges, offline inbox, six agent hosts.">
+<meta property="og:description" content="jgs-lit-memory keeps paper records, citation edges, and agent-authored analysis briefs in a git-tracked .lit corpus. Capture once, then query the corpus, not the internet.">
 <meta name="twitter:card" content="summary">
 <meta name="twitter:title" content="jgs-lit-memory">
-<meta name="twitter:description" content="Capture scholarly papers from OpenAlex into a .lit corpus with the lit-capture skill. One record per paper, citation edges, offline inbox, six agent hosts.">
+<meta name="twitter:description" content="jgs-lit-memory keeps paper records, citation edges, and agent-authored analysis briefs in a git-tracked .lit corpus. Capture once, then query the corpus, not the internet.">
 <script type="application/ld+json">
 {"@context":"https://schema.org","@type":"SoftwareApplication","name":"jgs-lit-memory","applicationCategory":"DeveloperApplication","operatingSystem":"Windows, macOS, Linux","softwareVersion":"1.1.0","license":"https://github.com/jgsystemsconsulting/jgs-lit-memory/blob/main/LICENSE","url":"https://jgsystemsconsulting.github.io/jgs-lit-memory/","codeRepository":"https://github.com/jgsystemsconsulting/jgs-lit-memory","author":{"@type":"Organization","name":"JG Systems Consulting Ltd"}}
 </script>
@@ -45,7 +45,7 @@
 <div class="hero"><div class="wrap">
   <h1>jgs-lit-memory</h1>
   <p>Capture the papers once. Query the corpus, not the internet, next time.</p>
-  <p class="sub">One skill and one script: papers from OpenAlex into a git-tracked .lit corpus in your project.</p>
+  <p class="sub">One skill and one script: paper records, citation edges, and analysis briefs in a git-tracked .lit corpus in your project.</p>
   <div class="cta">
     <a class="btn btn-primary" href="#install">Install <span aria-hidden="true">&rarr;</span></a>
     <a class="btn btn-ghost" href="#usage">How it runs <span aria-hidden="true">&rarr;</span></a>
@@ -54,12 +54,13 @@
 
 <section id="what"><div class="wrap">
   <div class="shead"><span class="label">&sect;01 &middot; What it is</span><h2>A corpus on your disk, not a subscription</h2></div>
-  <p class="lead">Research conversations re-find the same papers every week. jgs-lit-memory turns each keep-worthy paper into one normalized JSON record under <code>.lit/</code> in the project that produced it, with citation edges between records. The corpus is plain files, git-tracked, and survives every session. The next conversation asks the corpus before it asks the internet.</p>
+  <p class="lead">Research conversations re-find the same papers every week. The corpus already answers two questions: "do we have it?", from one normalized JSON record per paper under <code>papers/</code>, and "who cites whom?", from the edges file <code>graph/edges.jsonl</code>. Neither layer records what the paper claims, how it was tested, its limits, or why the paper matters. The brief does. It is one analysis sidecar per paper under <code>.lit/briefs/</code>, drafted by the agent, validated and written by the script. Three layers in plain files, git-tracked, surviving every session: record, edges, brief. The next conversation asks the corpus before it asks the internet.</p>
   <div class="grid g3" style="margin-top:1.5rem">
     <div class="cell"><h3>Papers and edges</h3><p><code>papers/&lt;W-id&gt;.json</code>, one record per work; <code>graph/edges.jsonl</code> carries who cites whom. Atomic writes: a crash never leaves a half-written file.</p></div>
     <div class="cell"><h3>Offline inbox</h3><p>Papers land in <code>inbox.jsonl</code> the moment they come up. No network needed. A triage run resolves the queue and reports what failed, with reasons.</p></div>
     <div class="cell"><h3>Corpus answers first</h3><p>A generated <code>.lit/SKILL.md</code> index carries counts and query recipes, so the agent checks the corpus before re-searching OpenAlex.</p></div>
   </div>
+  <p class="lead" style="margin-top:1.5rem"><b>One paper end to end.</b> Capture writes the record under <code>papers/</code>, adds citation edges to <code>graph/edges.jsonl</code>, and creates a <code>pending</code> stub at <code>.lit/briefs/&lt;W-id&gt;.json</code>. The agent drains the enrichment queue with <code>--enrich-pending</code>, drafts the brief, submits it through <code>--brief-write</code>, and verifies it with <code>--brief-check</code>. The script never calls an LLM; it stubs, lists, validates, and atomically writes.</p>
 </div></section>
 
 <section id="verbs"><div class="wrap">
@@ -80,9 +81,15 @@
       <tr><td><code>--inbox</code></td><td>Triage the offline queue: dedupe, resolve, rewrite once. Failures stay queued with their reason.</td></tr>
       <tr><td><code>--status</code></td><td>Corpus summary. Read-only.</td></tr>
       <tr><td><code>--check</code></td><td>Live smoke test of the four endpoint forms.</td></tr>
+      <tr><td><code>--enrich-pending</code></td><td>List briefs awaiting enrichment: <code>pending</code> and <code>partial</code> as JSONL rows; unreadable files labeled <code>invalid</code>. Read-only.</td></tr>
+      <tr><td><code>--brief-status [W-id]</code></td><td>Brief counts by status and basis; with an id, print that brief's JSON. Read-only.</td></tr>
+      <tr><td><code>--brief-check [W-id]</code></td><td>Validate one brief or all (schema, claim graph, derived fields). Exit 1 when invalid.</td></tr>
+      <tr><td><code>--brief-write --id &lt;W-id&gt; --file &lt;payload.json&gt; [--human]</code></td><td>Validate and atomically write a brief. Replaces the <code>agent</code> block, keeps <code>human</code> unless <code>--human</code>, derives <code>status</code> and <code>basis</code>.</td></tr>
+      <tr><td><code>--brief-restub --id &lt;W-id&gt;</code></td><td>Reset the brief's agent shell and enrich stamps to pending. Keeps <code>human</code>.</td></tr>
     </tbody>
   </table>
   </div>
+  <p class="lead" style="margin-top:1.5rem"><b>Limits.</b> Abstracts come only from OpenAlex's inverted index and are null on roughly 40 to 55 percent of works. <code>referenced_works</code> is lossy relative to printed reference lists, so the graph is biased toward DOI-matchable citations. The corpus is for identity, graph, and retrieval, not full text. Budgeted calls (title searches, batches, inbox triage) warn and draw on a small keyless daily budget without an API key; singleton DOI and W-id lookups are free.</p>
 </div></section>
 
 <section id="agents"><div class="wrap">
