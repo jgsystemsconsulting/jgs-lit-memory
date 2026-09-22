@@ -783,7 +783,15 @@ class BudgetExhausted(Exception):
 
 
 class BackoffExhausted(Exception):
-    """A call kept failing through the full backoff schedule."""
+    """A call kept failing through the full backoff schedule. The message is
+    "backoff exhausted after N attempts: <url>" with every api_key query
+    value replaced by REDACTED, so str(exc), repr(exc), and exc.args are
+    safe to store in the corpus or print."""
+
+    def __init__(self, url):
+        safe = re.sub(r"([?&]api_key=)[^&#]*", r"\g<1>REDACTED", url)
+        super().__init__("backoff exhausted after {0} attempts: {1}".format(
+            MAX_ATTEMPTS, safe))
 
 
 def _retry_delay(headers, attempt_index):

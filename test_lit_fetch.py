@@ -1348,6 +1348,79 @@ def test_check_forms_fake():
     assert "FAIL" not in out.getvalue()
 
 
+# ---------------------------------------------------------------------------
+# checks: error path (api_key redaction and the budget stop; offline)
+# ---------------------------------------------------------------------------
+
+def test_backoff_exhausted_redacts_key():
+    """T1. The class owns the redaction: args, str, and repr are all safe,
+    and the real retry loop raises the redacted form after MAX_ATTEMPTS."""
+    exc = lit_fetch.BackoffExhausted(
+        "https://api.openalex.org/works?search=x&api_key=SECRET123&select=id")
+    for text in (str(exc), repr(exc), exc.args[0]):
+        assert "SECRET123" not in text
+    assert "api_key=REDACTED" in str(exc)
+    assert "search=x" in str(exc)
+    assert "backoff exhausted after 5 attempts" in str(exc)
+    keyless = "https://api.openalex.org/works?search=x&select=id"
+    assert str(lit_fetch.BackoffExhausted(keyless)) == (
+        "backoff exhausted after 5 attempts: " + keyless)
+
+    def handler(url):
+        raise lit_fetch.urllib.error.HTTPError(
+            url, 503, "Service Unavailable", {}, io.BytesIO(b""))
+
+    with fake_urlopen(handler) as calls:
+        try:
+            lit_fetch.http_get(lit_fetch.work_url("W1111111111", "SECRET123"))
+            raise AssertionError("expected BackoffExhausted")
+        except lit_fetch.BackoffExhausted as exc:
+            assert "SECRET123" not in str(exc)
+            assert "api_key=REDACTED" in str(exc)
+    assert len(calls) == lit_fetch.MAX_ATTEMPTS
+    assert all("api_key=SECRET123" in u for u in calls)   # wire format unchanged
+
+
+def test_inbox_keyed_backoff_writes_no_key():
+    """T2. A keyed inbox run that exhausts backoff on one entry queues it with
+    a redacted, descriptive last_error; the same class escaping to the main
+    outer catch prints a redacted error line and exits 1."""
+    with tempfile.TemporaryDirectory() as tmp:
+        lit = pathlib.Path(tmp) / ".lit"
+        lit_fetch.ensure_corpus(lit)
+        entry = {"ref": "title:A Brand New Paper", "title": "A Brand New Paper",
+                 "note": "to resolve", "added_at": "2026-09-22T10:00:00Z"}
+        (lit / "inbox.jsonl").write_text(json.dumps(entry) + "\n", encoding="utf-8")
+
+        def handler(url):
+            raise lit_fetch.BackoffExhausted(url)   # url carries api_key=SECRET123
+
+        out = io.StringIO()
+        with fake_http(handler):
+            with contextlib.redirect_stdout(out):
+                run = lit_fetch.Run()
+                lit_fetch.verb_inbox(lit, "SECRET123", run)
+        assert run.failed == 1 and run.written == 0
+        text = (lit / "inbox.jsonl").read_text(encoding="utf-8")
+        assert "SECRET123" not in text
+        assert "api_key=REDACTED" in text and "backoff exhausted" in text
+        remaining = [json.loads(l) for l in text.splitlines() if l.strip()]
+        assert len(remaining) == 1 and remaining[0]["ref"] == "title:A Brand New Paper"
+        assert remaining[0]["last_error"].startswith("backoff exhausted after 5 attempts: ")
+        assert "SECRET123" not in run.summary()
+        assert "SECRET123" not in out.getvalue()
+        # the same class escaping verb_ids to the main outer catch (:1480)
+        out2 = io.StringIO()
+        with fake_http(handler):
+            with contextlib.redirect_stdout(out2):
+                rc = lit_fetch.main(["--ids", "W9000000001", "--dir", str(lit),
+                                     "--api-key", "SECRET123"])
+        assert rc == 1
+        assert "error: backoff exhausted after 5 attempts: " in out2.getvalue()
+        assert "api_key=REDACTED" in out2.getvalue()
+        assert "SECRET123" not in out2.getvalue()
+
+
 CHECKS = [
     test_fold,
     test_bare_ids,
@@ -1379,6 +1452,8 @@ CHECKS = [
     test_inbox_triage_flow,
     test_status_never_before_index,
     test_check_forms_fake,
+    test_backoff_exhausted_redacts_key,
+    test_inbox_keyed_backoff_writes_no_key,
     test_present_rules,
     test_new_brief_shape,
     test_paper_capture_stamp,
