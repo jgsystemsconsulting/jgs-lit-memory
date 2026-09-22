@@ -81,6 +81,37 @@ Title searches and batches are budgeted calls; without an API key the script
 warns and draws on the small keyless daily budget. Singleton DOI and W-id
 lookups are free.
 
+## When OpenAlex is unavailable
+
+Failure signs: `--check` exits non-zero, the summary reads "budget
+exhausted", or a failure reason reads "backoff exhausted after 5 attempts".
+Causes are the spent keyless daily budget, an OpenAlex outage, or no
+network. Completed writes always stand; nothing half-written needs cleanup.
+
+The script never falls back to another metadata source by design: the
+corpus is keyed on canonical OpenAlex W-ids. The fallback is agent work,
+in this order:
+
+1. Run `--check` to separate "OpenAlex is down" from "today's budget is
+   spent".
+2. Tell the user what failed and suggest the fix: get a free OpenAlex API
+   key and set `OPENALEX_API_KEY` (or pass `--api-key`). The key lifts the
+   budget on title searches, batches, and inbox triage; singleton DOI and
+   W-id lookups stay free either way.
+3. If the user wants the paper now, fetch it directly from the open web and
+   leave the corpus write for later: download the PDF from arXiv
+   (`https://arxiv.org/pdf/<arxiv-id>`), resolve the DOI landing page
+   (`https://doi.org/<doi>`), or take metadata from the arXiv Atom API
+   (`https://export.arxiv.org/api/query?id_list=<arxiv-id>`) or Crossref
+   (`https://api.crossref.org/works/<doi>`), then read the paper in-chat.
+   An optional `findings/<YYYY>-<slug>.md` entry can hold what was learned.
+4. Never hand-write `papers/<W-id>.json` or a brief with an invented id;
+   made-up ids break dedupe, the citation graph, and brief writes. Queue
+   the paper offline in `.lit/inbox.jsonl` instead (Capture offline first).
+5. When OpenAlex answers again (key set, budget reset, outage over), run
+   `--inbox`, then `--enrich-pending` as usual. Re-runs are idempotent
+   through skip-if-exists.
+
 ## Paper briefs
 
 Every captured paper gets an analysis brief sidecar at
