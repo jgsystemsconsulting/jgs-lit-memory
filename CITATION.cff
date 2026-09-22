@@ -1,7 +1,7 @@
 cff-version: 1.2.0
 message: "If you use this software, please cite it as below."
 title: "jgs-lit-memory"
-version: "1.2.0"
+version: "1.2.1"
 date-released: "2026-09-18"
 authors:
   - name: "JG Systems Consulting Ltd"

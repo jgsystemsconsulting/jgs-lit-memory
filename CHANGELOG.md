@@ -8,6 +8,28 @@ Single-source history for jgs-lit-memory. Tags are three-component semver
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-09-22
+
+Gemini installs now run. The extension destination gains `lit_fetch.py`
+beside `SKILL.md`, the install docs state per-host reality, and CI fails if
+the script ever drops out of the Gemini path again. Brief checking gets
+harder to fool and the marketplace blurbs match what ships.
+
+- `install_gemini` copies `lit_fetch.py` into the extension dest, so
+  `--agent gemini` and `--agent all` produce a runnable extension
+  (`GEMINI.md`, `SKILL.md`, `gemini-extension.json`, `lit_fetch.py`)
+- README, `docs/other-agents.md`, and `docs/skill-usage.md` now describe
+  native whole-folder, Gemini four-file extension, and Cursor rule-only
+  installs, including the installed Gemini script path
+- CI packaging smoke asserts the four-file Gemini layout under
+  `.tmp-install-check-gemini/jgs-lit-capture/`
+- `--brief-check` fails when a brief's `id` does not equal its
+  `briefs/<stem>.json` filename; the comparison uses the file stem, never
+  the alias-resolved label, and single-mode lookup uppercases the resolved
+  id; `docs/skill-usage.md` names the new check
+- SKILLS.md index row and the five plugin/marketplace descriptions name the
+  three-layer corpus (records, citation edges, analysis briefs)
+
 ## [1.2.0] - 2026-09-22
 
 OpenAlex-unavailable fallback. The lit-capture skill now prescribes what to

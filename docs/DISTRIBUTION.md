@@ -14,7 +14,7 @@ statuses, re-date reasons whose premises changed, never drop a row silently.
 An agent never marks a row `submitted`; filing is the maintainer's action
 and this ledger records it.
 
-Last reviewed: 1.2.0 / 2026-09-22
+Last reviewed: 1.2.1 / 2026-09-22
 
 ## In-host marketplaces (manifests shipped, RR-B-29a / RR-S-08)
 
