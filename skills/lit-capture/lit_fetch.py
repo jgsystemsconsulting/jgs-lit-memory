@@ -1232,6 +1232,12 @@ def _check_brief_file(path, label):
         print("FAIL {0}: brief is not an object".format(label))
         return False
     problems = validate_brief(brief)
+    brief_id = brief.get("id")
+    stem = path.stem
+    if brief_id != stem:
+        problems.append(
+            "brief id {0} does not match filename stem {1}".format(
+                brief_id, stem))
     for problem in problems:
         print("FAIL {0}: {1}".format(label, problem))
     if not problems:
@@ -1246,6 +1252,7 @@ def verb_brief_check(lit_dir, wid):
     d = briefs_dir(lit_dir)
     if wid and wid != "all":
         canonical = resolve_alias(bare_wid(wid), aliases)
+        canonical = canonical.upper()
         p = brief_path(lit_dir, canonical)
         if not p.exists():
             print("error: no brief for {0}".format(canonical), file=sys.stderr)

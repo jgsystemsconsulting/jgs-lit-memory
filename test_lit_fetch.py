@@ -636,6 +636,73 @@ def test_brief_check_ok_and_invalid():
             assert lit_fetch.verb_brief_check(lit, "W404") == 1
 
 
+def test_brief_check_id_stem_mismatch():
+    """I3 / P4: brief id must equal the filename stem; label stays print-only."""
+    with tempfile.TemporaryDirectory() as tmp:
+        lit = pathlib.Path(tmp) / ".lit"
+        lit_fetch.ensure_corpus(lit)
+
+        # Matched control: id W1 at briefs/W1.json
+        ok = lit_fetch.new_brief("W1")
+        ok["agent"] = agent_shell(overview="o", methods_tests="m", limits="l",
+                                  why_it_matters="w",
+                                  claims=[claim("c1"), claim("c2")])
+        ok["status"] = "ready"
+        ok["basis"] = "abstract"
+        ok["enriched_at"] = "2026-09-18T00:00:00Z"
+        ok["enrichment_source"] = "agent"
+        assert lit_fetch.validate_brief(ok) == []
+        write_brief_file(lit, "W1", ok)
+
+        # Mismatch fixture: valid ready brief id W1 written as briefs/W2.json
+        mismatch = lit_fetch.new_brief("W1")
+        mismatch["agent"] = agent_shell(overview="o", methods_tests="m", limits="l",
+                                        why_it_matters="w",
+                                        claims=[claim("c1"), claim("c2")])
+        mismatch["status"] = "ready"
+        mismatch["basis"] = "abstract"
+        mismatch["enriched_at"] = "2026-09-18T00:00:00Z"
+        mismatch["enrichment_source"] = "agent"
+        assert lit_fetch.validate_brief(mismatch) == []
+        assert mismatch["id"] == "W1"
+        write_brief_file(lit, "W2", mismatch)   # stem W2, id W1
+
+        # Alias discrimination: self-consistent brief whose stem is an alias key.
+        # Label becomes the canonical target; stem stays the filename. A regression
+        # that compares id to label (not path.stem) fails this row.
+        aliased = lit_fetch.new_brief("W4")
+        write_brief_file(lit, "W4", aliased)
+        lit_fetch.save_aliases(lit, {"W4": "W1"})
+
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc_all = lit_fetch.verb_brief_check(lit, "all")
+        text_all = out.getvalue()
+        assert rc_all == 1
+        assert "OK W1" in text_all
+        assert "does not match filename stem" in text_all
+        assert "FAIL W2: brief id W1 does not match filename stem W2" in text_all
+        # Alias row: id == stem == W4, label resolves to W1. Must still OK.
+        assert "FAIL W4" not in text_all
+        # The aliased file is labeled with the resolved alias target (W1) in
+        # all-mode; the OK line for that print label already appears from the
+        # control. Lock the discrimination by checking no FAIL mentions stem
+        # mismatch for id W4:
+        assert "brief id W4 does not match filename stem" not in text_all
+
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc_one = lit_fetch.verb_brief_check(lit, "W2")
+        text_one = out.getvalue()
+        assert rc_one == 1
+        assert "does not match filename stem" in text_one
+
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            assert lit_fetch.verb_brief_check(lit, "W1") == 0
+        assert "OK W1" in out.getvalue()
+
+
 def test_brief_cli_verbs_main():
     with tempfile.TemporaryDirectory() as tmp:
         lit = pathlib.Path(tmp) / ".lit"
@@ -1597,6 +1664,7 @@ CHECKS = [
     test_enrich_pending_listing,
     test_brief_status_counts_and_detail,
     test_brief_check_ok_and_invalid,
+    test_brief_check_id_stem_mismatch,
     test_brief_cli_verbs_main,
     test_brief_write_happy_and_derived_fields,
     test_brief_write_preserves_human,
