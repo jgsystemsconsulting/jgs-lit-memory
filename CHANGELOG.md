@@ -6,6 +6,14 @@
 Single-source history for jgs-lit-memory. Tags are three-component semver
 (`vMAJOR.MINOR.PATCH`).
 
+## [Unreleased]
+
+### Added
+
+- Favicon: the landing page ships `docs/favicon.svg` (three-layer mark on a
+  paper badge) linked from the page head, replacing the empty `data:` stub.
+  Meets `RR-B-20` as of release-repo-standard 1.15.
+
 ## [1.1.0] - 2026-09-18
 
 Paper analysis-brief sidecars. On first successful paper write, the corpus
