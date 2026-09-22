@@ -27,3 +27,8 @@ jobs:
           python install.py --dest .tmp-install-check
           test -f .tmp-install-check/lit-capture/SKILL.md
           test -f .tmp-install-check/lit-capture/lit_fetch.py
+          python install.py --agent gemini --dest .tmp-install-check-gemini
+          test -f .tmp-install-check-gemini/jgs-lit-capture/SKILL.md
+          test -f .tmp-install-check-gemini/jgs-lit-capture/lit_fetch.py
+          test -f .tmp-install-check-gemini/jgs-lit-capture/gemini-extension.json
+          test -f .tmp-install-check-gemini/jgs-lit-capture/GEMINI.md
