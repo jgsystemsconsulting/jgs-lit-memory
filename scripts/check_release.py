@@ -5,7 +5,7 @@
 Local coverage: required files, forbidden tracked paths, forbidden-content
 leak sentinels, Python headers and SPDX, UTF-8 BOM in parser-critical files,
 machine-local path strings (RR-B-34), version consistency across the
-version-bearing sources, and SKILL.md frontmatter lint.
+version-bearing sources (including the docs/index.html page strings), and SKILL.md frontmatter lint.
 
 CI (.github/workflows/validate.yml) runs the equivalent checks inline and is
 the authority. CI must not execute checkout code, so the two implementations
@@ -221,6 +221,32 @@ def check_versions() -> bool:
     return True
 
 
+def check_site_version() -> bool:
+    """docs/index.html version strings must equal RELEASE-INFO.txt (RR: site drift 1.1.0 vs 1.2.1)."""
+    m = re.search(r"^Version:\s*(\d+\.\d+\.\d+)", _read("RELEASE-INFO.txt"), re.M)
+    if not m:
+        fail("RELEASE-INFO.txt: no Version line")
+        return False
+    expected = m.group(1)
+    page = _read("docs/index.html")
+    loci = {
+        "softwareVersion": r'"softwareVersion":"(\d+\.\d+\.\d+)"',
+        "masthead REV": r"REV <b>(\d+\.\d+\.\d+)</b>",
+        "footer Rev": r'<span class="label">Rev</span><b>(\d+\.\d+\.\d+)</b>',
+    }
+    bad = []
+    for name, pat in loci.items():
+        v = re.search(pat, page)
+        val = v.group(1) if v else None
+        if val != expected:
+            bad.append(f"{name}={val!r} (expected {expected})")
+    if bad:
+        fail("site page version mismatch or missing pattern: " + "; ".join(bad))
+        return False
+    print(f"site page versions agree at {expected}")
+    return True
+
+
 def check_skills() -> bool:
     ok = True
     skills = sorted(pathlib.Path("skills").glob("*/SKILL.md"))
@@ -271,6 +297,7 @@ def main() -> int:
         check_headers(tracked),
         check_bom(),
         check_versions(),
+        check_site_version(),
         check_skills(),
     ]
     if all(checks):

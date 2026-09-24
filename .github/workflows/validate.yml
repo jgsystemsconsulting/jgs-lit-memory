@@ -177,6 +177,14 @@ jobs:
               if not p.is_file():
                   return None
               return json.loads(p.read_text(encoding="utf-8")).get("version")
+          def site_page():
+              t = pathlib.Path("docs/index.html").read_text(encoding="utf-8")
+              pats = [r'"softwareVersion":"(\d+\.\d+\.\d+)"',
+                      r"REV <b>(\d+\.\d+\.\d+)</b>",
+                      r'<span class="label">Rev</span><b>(\d+\.\d+\.\d+)</b>']
+              found = [re.search(p, t) for p in pats]
+              return [mm.group(1) if mm else None for mm in found]
+          site_vals = site_page()
           vals = {
               "CHANGELOG": changelog_top(),
               "RELEASE-INFO": release_info(),
@@ -184,6 +192,9 @@ jobs:
               "claude plugin.json": plugin(".claude-plugin/plugin.json"),
               "cursor plugin.json": plugin(".cursor-plugin/plugin.json"),
               "gemini-extension.json": plugin("gemini-extension.json"),
+              "index.html softwareVersion": site_vals[0],
+              "index.html masthead REV": site_vals[1],
+              "index.html footer Rev": site_vals[2],
           }
           print(vals)
           uniq = {v for v in vals.values() if v}
