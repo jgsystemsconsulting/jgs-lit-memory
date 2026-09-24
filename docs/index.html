@@ -15,11 +15,15 @@
 <meta property="og:url" content="https://jgsystemsconsulting.github.io/jgs-lit-memory/">
 <meta property="og:title" content="jgs-lit-memory: local literature memory for coding agents">
 <meta property="og:description" content="jgs-lit-memory keeps paper records, citation edges, and agent-authored analysis briefs in a git-tracked .lit corpus. Capture once, then query the corpus, not the internet.">
-<meta name="twitter:card" content="summary">
+<meta property="og:image" content="https://jgsystemsconsulting.github.io/jgs-lit-memory/images/og/og-lit-memory-1200.jpg">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="jgs-lit-memory">
 <meta name="twitter:description" content="jgs-lit-memory keeps paper records, citation edges, and agent-authored analysis briefs in a git-tracked .lit corpus. Capture once, then query the corpus, not the internet.">
+<meta name="twitter:image" content="https://jgsystemsconsulting.github.io/jgs-lit-memory/images/og/og-lit-memory-1200.jpg">
 <script type="application/ld+json">
-{"@context":"https://schema.org","@type":"SoftwareApplication","name":"jgs-lit-memory","applicationCategory":"DeveloperApplication","operatingSystem":"Windows, macOS, Linux","softwareVersion":"1.1.0","license":"https://github.com/jgsystemsconsulting/jgs-lit-memory/blob/main/LICENSE","url":"https://jgsystemsconsulting.github.io/jgs-lit-memory/","codeRepository":"https://github.com/jgsystemsconsulting/jgs-lit-memory","author":{"@type":"Organization","name":"JG Systems Consulting Ltd"}}
+{"@context":"https://schema.org","@type":"SoftwareApplication","name":"jgs-lit-memory","applicationCategory":"DeveloperApplication","operatingSystem":"Windows, macOS, Linux","softwareVersion":"1.2.1","license":"https://github.com/jgsystemsconsulting/jgs-lit-memory/blob/main/LICENSE","url":"https://jgsystemsconsulting.github.io/jgs-lit-memory/","codeRepository":"https://github.com/jgsystemsconsulting/jgs-lit-memory","author":{"@type":"Organization","name":"JG Systems Consulting Ltd"}}
 </script>
 </head>
 <body>
@@ -28,14 +32,17 @@
   <span>CLASSIFICATION: <b>PUBLIC</b></span>
   <span>LICENCE: <b>MIT</b></span>
   <span>DOC-ID: <b>JGS-LIT-MEMORY</b></span>
-  <span>REV <b>1.1.0</b></span>
+  <span>REV <b>1.2.1</b></span>
 </div></header>
 
 <nav class="site" aria-label="Site"><div class="wrap">
   <a href="#what">What it is</a>
+  <a href="#brief">The brief</a>
+  <a href="#layout">Layout</a>
   <a href="#verbs">Verbs</a>
   <a href="#agents">Agents</a>
-  <a href="#usage">Usage</a>
+  <a href="#ask">How you ask</a>
+  <a href="#why">Why</a>
   <a href="#install">Install</a>
   <a href="https://github.com/jgsystemsconsulting/jgs-lit-memory">Repository</a>
   <a href="https://labs.jgsystemsconsulting.com/licensing.html">Licensing</a>
@@ -48,7 +55,7 @@
   <p class="sub">One skill and one script: paper records, citation edges, and analysis briefs in a git-tracked .lit corpus in your project.</p>
   <div class="cta">
     <a class="btn btn-primary" href="#install">Install <span aria-hidden="true">&rarr;</span></a>
-    <a class="btn btn-ghost" href="#usage">How it runs <span aria-hidden="true">&rarr;</span></a>
+    <a class="btn btn-ghost" href="#ask">How it runs <span aria-hidden="true">&rarr;</span></a>
   </div>
 </div></div>
 
@@ -63,8 +70,47 @@
   <p class="lead" style="margin-top:1.5rem"><b>One paper end to end.</b> Capture writes the record under <code>papers/</code>, adds citation edges to <code>graph/edges.jsonl</code>, and creates a <code>pending</code> stub at <code>.lit/briefs/&lt;W-id&gt;.json</code>. The agent drains the enrichment queue with <code>--enrich-pending</code>, drafts the brief, submits it through <code>--brief-write</code>, and verifies it with <code>--brief-check</code>. The script never calls an LLM; it stubs, lists, validates, and atomically writes.</p>
 </div></section>
 
+<section id="brief"><div class="wrap">
+  <div class="shead"><span class="label">&sect;02 &middot; The brief</span><h2>One analysis sidecar per paper</h2></div>
+  <p class="lead">First load of a paper creates <code>.lit/briefs/&lt;W-id&gt;.json</code>, a <code>pending</code> stub. The agent fills it by draining the enrichment queue, drafts the analysis, and submits it through <code>--brief-write</code>. The script never calls an LLM. It stubs, lists, validates, and atomically writes.</p>
+  <div class="sheet" style="margin-top:1.5rem;padding:0;overflow:auto">
+  <table class="data">
+    <caption>Brief anatomy. The script derives <code>status</code> and <code>basis</code> on every write; it never takes them from the payload.</caption>
+    <thead>
+      <tr><th>Field group</th><th>Written by</th><th>Rule</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>overview, claims (with in-paper <code>supports</code> / <code>contradicts</code> graph), methods, limits, why it matters</td><td>Agent</td><td>Drafted by the agent, submitted through <code>--brief-write</code>.</td></tr>
+      <tr><td><code>status</code>, <code>basis</code></td><td>Script</td><td>Derived on every write. Never taken from the payload.</td></tr>
+      <tr><td><code>human</code></td><td>You</td><td>Merge-only. A normal write keeps it. <code>--human</code> replaces it only when you dictated notes this turn.</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p class="lead" style="margin-top:1.5rem"><b>Lifecycle.</b> <code>pending</code> (empty agent block), then <code>partial</code> (some content, not yet ready), then <code>ready</code> (ready content present).</p>
+  <div class="grid g3" style="margin-top:1.5rem">
+    <div class="cell"><h3>Write gate</h3><p><code>--brief-write</code> validates the payload and writes atomically, or rejects it with exit 1.</p></div>
+    <div class="cell"><h3>Check gate</h3><p><code>--brief-check [W-id]</code> validates one brief or all: schema, id vs filename, claim graph, derived fields. Exit 1 when invalid.</p></div>
+    <div class="cell"><h3>Id equals filename</h3><p><code>--brief-check</code> fails when a brief's <code>id</code> differs from its <code>briefs/&lt;stem&gt;.json</code> filename (1.2.1).</p></div>
+  </div>
+</div></section>
+
+<section id="layout"><div class="wrap">
+  <div class="shead"><span class="label">&sect;03 &middot; Corpus layout</span><h2>Plain files, git-tracked</h2></div>
+  <p class="lead"><code>.lit/</code> lives in the project that produced it and is git-tracked there.</p>
+  <div class="sheet" style="margin-top:1.5rem"><pre><span class="c"># the whole corpus, committed beside your code</span>
+.lit/
+  papers/&lt;W-id&gt;.json      one normalized record per paper
+  briefs/&lt;W-id&gt;.json      analysis sidecar per paper (agent-authored, script-validated)
+  graph/edges.jsonl       {"source": citing W-id, "target": cited W-id}, one per line
+  graph/aliases.json      {"alias W-id": "canonical W-id"} recorded on 301 merges
+  findings/&lt;YYYY&gt;-&lt;slug&gt;.md  optional human notes
+  inbox.jsonl             offline capture queue
+  SKILL.md                generated corpus contract; never hand-edited</pre></div>
+  <p class="lead" style="margin-top:1.5rem">All writes are atomic (temp file plus <code>os.replace</code>). A crash mid-batch leaves completed records on disk and never a half-written file. Edges are a full-rewrite idempotent union, so the next successful run heals partial runs.</p>
+</div></section>
+
 <section id="verbs"><div class="wrap">
-  <div class="shead"><span class="label">&sect;02 &middot; Verbs</span><h2>One resolution verb per call</h2></div>
+  <div class="shead"><span class="label">&sect;04 &middot; Verbs</span><h2>One resolution verb per call</h2></div>
   <p class="lead"><code>lit_fetch.py</code> is the only component that touches the network, and it talks to OpenAlex only. Everything else is agent reading and writing. Singleton DOI and W-id lookups are free; budgeted calls warn without an API key.</p>
   <div class="sheet" style="margin-top:1.5rem;padding:0;overflow:auto">
   <table class="data">
@@ -83,7 +129,7 @@
       <tr><td><code>--check</code></td><td>Live smoke test of the four endpoint forms.</td></tr>
       <tr><td><code>--enrich-pending</code></td><td>List briefs awaiting enrichment: <code>pending</code> and <code>partial</code> as JSONL rows; unreadable files labeled <code>invalid</code>. Read-only.</td></tr>
       <tr><td><code>--brief-status [W-id]</code></td><td>Brief counts by status and basis; with an id, print that brief's JSON. Read-only.</td></tr>
-      <tr><td><code>--brief-check [W-id]</code></td><td>Validate one brief or all (schema, claim graph, derived fields). Exit 1 when invalid.</td></tr>
+      <tr><td><code>--brief-check [W-id]</code></td><td>Validate one brief or all (schema, id vs filename, claim graph, derived fields). Exit 1 when invalid.</td></tr>
       <tr><td><code>--brief-write --id &lt;W-id&gt; --file &lt;payload.json&gt; [--human]</code></td><td>Validate and atomically write a brief. Replaces the <code>agent</code> block, keeps <code>human</code> unless <code>--human</code>, derives <code>status</code> and <code>basis</code>.</td></tr>
       <tr><td><code>--brief-restub --id &lt;W-id&gt;</code></td><td>Reset the brief's agent shell and enrich stamps to pending. Keeps <code>human</code>.</td></tr>
     </tbody>
@@ -93,7 +139,7 @@
 </div></section>
 
 <section id="agents"><div class="wrap">
-  <div class="shead"><span class="label">&sect;03 &middot; Agents</span><h2>One pack, every main host</h2></div>
+  <div class="shead"><span class="label">&sect;05 &middot; Agents</span><h2>One pack, every main host</h2></div>
   <p class="lead"><code>install.py</code> already targets the main coding agents. Native folder copy for ZCode, Claude Code, OpenAI Codex, GitHub Copilot CLI, and OpenClaw. Gemini CLI as an extension. Cursor as project-local rules. Run <code>python install.py --agent all</code> for the user-global hosts, then <code>--agent cursor</code> in the repo that needs rules. Per-path table: <a href="https://github.com/jgsystemsconsulting/jgs-lit-memory/blob/main/docs/other-agents.md">docs/other-agents.md</a>.</p>
   <div class="grid g3" style="margin-top:1.5rem">
     <div class="cell"><h3>ZCode</h3><p>Native folder. <code>~/.zcode/skills/&lt;skill&gt;/</code>. <code>--agent zcode</code></p></div>
@@ -105,13 +151,17 @@
   </div>
 </div></section>
 
-<section id="usage"><div class="wrap">
-  <div class="shead"><span class="label">&sect;04 &middot; Usage</span><h2>Conversational, not a slash command</h2></div>
+<section id="ask"><div class="wrap">
+  <div class="shead"><span class="label">&sect;06 &middot; How you ask</span><h2>Conversational, not a slash command</h2></div>
   <p class="lead">The <code>lit-capture</code> skill triggers when a paper comes up with enough identity to fetch (DOI, arXiv id, OpenAlex W-id, or exact title plus author or year) and looks worth keeping. It scans the conversation, dedupes against the corpus, then captures offline or fetches now with your consent.</p>
-  <div class="sheet" style="margin-top:1.5rem"><pre><span class="c"># say this in a research conversation</span>
-Capture this one: 10.1038/nature12373
-Save that arXiv paper, 2401.12345, "Attention Is All You Need"
-What do we have on citation graph bias? Check the corpus first.</pre></div>
+  <div class="grid g3" style="margin-top:1.5rem">
+    <div class="cell"><span class="num">01</span><h3>Capture by DOI</h3><p>A paper with a DOI comes up and is worth keeping.</p><p>Runs: <code>--doi</code></p><p><code>Capture this one: 10.1038/nature12373</code></p></div>
+    <div class="cell"><span class="num">02</span><h3>arXiv by title</h3><p>An arXiv paper. OpenAlex has no arXiv lookup, so the title carries the match.</p><p>Runs: <code>--arxiv &lt;id&gt; --title &lt;t&gt;</code></p><p><code>Save that arXiv paper, 1706.03762, "Attention Is All You Need"</code></p></div>
+    <div class="cell"><span class="num">03</span><h3>Corpus first</h3><p>A question the corpus may already answer. No fetch unless you consent.</p><p>Runs: none; reads <code>.lit/SKILL.md</code>, <code>papers/</code>, <code>graph/edges.jsonl</code></p><p><code>What do we have on citation graph bias? Check the corpus first.</code></p></div>
+    <div class="cell"><span class="num">04</span><h3>Inbox triage</h3><p>Papers queued offline in <code>inbox.jsonl</code>.</p><p>Runs: <code>--inbox</code></p><p><code>Triage the inbox.</code></p></div>
+    <div class="cell"><span class="num">05</span><h3>Drain briefs</h3><p>Stubs waiting for analysis.</p><p>Runs: <code>--enrich-pending</code>, then <code>--brief-write</code> per paper</p><p><code>Fill in the pending briefs.</code></p></div>
+    <div class="cell"><span class="num">06</span><h3>Check before citing</h3><p>You are about to cite from briefs.</p><p>Runs: <code>--brief-check</code></p><p><code>Check the briefs before I cite them.</code></p></div>
+  </div>
   <p class="lead" style="margin-top:1.5rem">Direct script use, after install (ZCode path shown; other hosts use their installed folder):</p>
   <div class="sheet" style="margin-top:1.5rem"><pre><span class="c"># status is read-only; try it first</span>
 python "$HOME/.zcode/skills/lit-capture/lit_fetch.py" --status
@@ -120,8 +170,21 @@ python "$HOME/.zcode/skills/lit-capture/lit_fetch.py" --inbox</pre></div>
   <p class="lead" style="margin-top:1.5rem">Full invoke and first-run detail, limits, and corpus layout: <a href="https://github.com/jgsystemsconsulting/jgs-lit-memory/blob/main/docs/skill-usage.md">docs/skill-usage.md</a>. Skill index: <a href="https://github.com/jgsystemsconsulting/jgs-lit-memory/blob/main/SKILLS.md">SKILLS.md</a>.</p>
 </div></section>
 
+<section id="why"><div class="wrap">
+  <div class="shead"><span class="label">&sect;07 &middot; Why</span><h2>Ask the corpus before the internet</h2></div>
+  <p class="lead">Research conversations re-find the same papers every week. The corpus keeps them: stable identity, offline capture, plain files your git history already tracks.</p>
+  <div class="grid g3" style="margin-top:1.5rem">
+    <div class="cell"><h3>Stable identity</h3><p>One OpenAlex W-id per paper. 301 merges are recorded in <code>graph/aliases.json</code>.</p></div>
+    <div class="cell"><h3>Offline inbox</h3><p>Capture needs no network. Triage resolves later and keeps failures queued with their reason.</p></div>
+    <div class="cell"><h3>Git-tracked provenance</h3><p><code>.lit/</code> is plain files in your project history. Briefs record each claim's <code>basis</code>.</p></div>
+    <div class="cell"><h3>Portable across hosts</h3><p>One pack installs into ZCode, Claude Code, Codex, Copilot CLI, OpenClaw, Gemini CLI, and Cursor.</p></div>
+    <div class="cell"><h3>CC0 metadata</h3><p>OpenAlex metadata is CC0.</p></div>
+  </div>
+  <p class="lead" style="margin-top:1.5rem">Questions and ideas go to <a href="https://github.com/jgsystemsconsulting/jgs-lit-memory/discussions">GitHub Discussions</a>.</p>
+</div></section>
+
 <section id="install"><div class="wrap">
-  <div class="shead"><span class="label">&sect;05 &middot; Install</span><h2>Clone, install, restart, capture</h2></div>
+  <div class="shead"><span class="label">&sect;08 &middot; Install</span><h2>Clone, install, restart, capture</h2></div>
   <p class="lead">Prerequisites: Python 3.9+ (stdlib only), network access to api.openalex.org, an OpenAlex API key optional. Install into every user-global host, or pick one. Restart the agent session so it discovers the skill.</p>
   <div class="sheet" style="margin-top:1.5rem"><pre><span class="c"># Python 3.9+, stdlib only. OpenAlex over HTTPS.</span>
 git clone https://github.com/jgsystemsconsulting/jgs-lit-memory
@@ -137,7 +200,7 @@ python install.py --list-agents</pre></div>
 <footer><div class="wrap">
   <div class="tblock">
     <div><span class="label">Product</span><b>jgs-lit-memory</b></div>
-    <div><span class="label">Rev</span><b>1.1.0</b></div>
+    <div><span class="label">Rev</span><b>1.2.1</b></div>
     <div><span class="label">Licence</span><b>MIT</b></div>
     <div><span class="label">Repository</span><b><a href="https://github.com/jgsystemsconsulting/jgs-lit-memory">github.com/jgsystemsconsulting</a></b></div>
     <div><span class="label">Source</span><b>OpenAlex (CC0 metadata)</b></div>
