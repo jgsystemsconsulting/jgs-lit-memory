@@ -28,6 +28,8 @@ h1,h2,h3{color:var(--text-hi);font-family:var(--mono);font-weight:700;letter-spa
 .masthead span{font:700 .625rem/1 var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--mute);}
 .masthead b{color:var(--text);font-weight:700;}
 .hero{padding:var(--pad-section) 0;border-bottom:1px solid var(--line);}
+.hero-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,44%);gap:2.5rem;align-items:center;}
+.hero-card{width:100%;height:auto;display:block;border:1px solid var(--line);border-radius:6px;}
 .hero h1{font-size:clamp(2rem,5vw,3.5rem);line-height:1.05;margin-bottom:1.25rem;}
 .hero p{max-width:62ch;font-size:1.0625rem;color:var(--text);}
 .hero .sub{margin-top:.5rem;color:var(--mute-2);}
@@ -72,7 +74,7 @@ table.data caption{caption-side:bottom;text-align:left;padding:12px 0 0;font:400
 .layer h3{font-size:.95rem;margin:1.25rem 0 .4rem;}
 .layer h3:first-of-type{margin-top:0;}
 @media (max-width:860px){
-  .g3,.g2,.tblock{grid-template-columns:1fr;}
+  .g3,.g2,.tblock,.hero-grid{grid-template-columns:1fr;}
   table.data{display:block;overflow:auto;}
 }
 @media (prefers-reduced-motion:reduce){
