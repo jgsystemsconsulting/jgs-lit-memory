@@ -11,3 +11,5 @@ release-notes.generated.md
 # Maintainer-only trees (keep/drop decision 2026-09-22: gitignore, files stay on disk)
 docs/superpowers/
 .zcode/
+
+.superpowers/
