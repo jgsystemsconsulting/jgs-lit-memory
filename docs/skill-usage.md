@@ -109,6 +109,8 @@ One resolution verb per invocation.
 | `--brief-check [W-id]` | Validate one brief or all (schema, id vs filename, claim graph, derived fields). Exit 1 when invalid. |
 | `--brief-write --id <W-id> --file <payload.json> [--human]` | Validate and atomically write a brief. Replaces the `agent` block, keeps `human` unless `--human`, derives `status` and `basis`. |
 | `--brief-restub --id <W-id>` | Reset the brief's agent shell and enrich stamps to pending. Keeps `human`. |
+| `--audit` | Quality gate: every paper has a ready brief with 3+ claims, open questions and a related-paper link, full-text basis when an open copy exists, no duplicate titles, empty inbox. Exit 1 on any FAIL. |
+| `--merge <W-old> --into <W-kept>` | Fold a duplicate version into the kept record: alias, repoint edges, merge briefs, delete the old record. |
 
 Common flags: `--dir <path>` (default `.lit`), `--api-key <key>` (default env
 `OPENALEX_API_KEY`), `--seed`, `--author`, `--year`. Exit codes: 0 success or

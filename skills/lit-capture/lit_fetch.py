@@ -212,7 +212,7 @@ def union_edges(existing, new):
     out, seen = [], set()
     for e in list(existing) + list(new):
         key = (e["source"], e["target"])
-        if key not in seen:
+        if key not in seen and key[0] != key[1]:
             seen.add(key)
             out.append({"source": e["source"], "target": e["target"]})
     return out
@@ -468,7 +468,7 @@ def validate_brief(brief):
     elif isinstance(related, list):
         for i, r in enumerate(related):
             if (not isinstance(r, dict) or not present_str(r.get("id"))
-                    or not WID_RE.match(str(r.get("id")))):
+                    or not PAPER_ID_RE.match(str(r.get("id")))):
                 problems.append("agent.related_in_corpus[{0}] needs an object "
                                 "with a W-id".format(i))
             elif r.get("note") is not None and not isinstance(r.get("note"), str):
@@ -1337,6 +1337,78 @@ def verb_brief_write(lit_dir, raw_id, payload_path, human_flag):
     return 0
 
 
+AUDIT_MIN_CLAIMS = 3
+
+def audit_problems(paper, brief, dup_of=None):
+    """Quality bar a brief must meet beyond schema validity. Pure; returns
+    problem strings. Abstract-only is accepted only when no open-access copy
+    is recorded and the agent notes say why full text was not read."""
+    if brief is None:
+        return ["no brief"]
+    problems = list(validate_brief(brief))
+    if brief.get("status") != "ready":
+        problems.append("status {0}, not ready".format(brief.get("status")))
+    a = brief.get("agent") or {}
+    claims = [c for c in a.get("claims") or []
+              if isinstance(c, dict) and present_str(c.get("text"))]
+    if len(claims) < AUDIT_MIN_CLAIMS:
+        problems.append("{0} claims, need {1}".format(len(claims), AUDIT_MIN_CLAIMS))
+    if not a.get("open_questions"):
+        problems.append("no open_questions")
+    if not a.get("related_in_corpus"):
+        problems.append("no related_in_corpus")
+    if brief.get("basis") == "abstract":
+        if paper.get("oa_url"):
+            problems.append("abstract basis but oa_url present; read the full text")
+        elif not present_str(a.get("notes")):
+            problems.append("abstract basis needs notes saying why full text was not read")
+    if dup_of:
+        problems.append("duplicate title of {0}; merge with --merge".format(dup_of))
+    return problems
+
+def verb_audit(lit_dir):
+    """Quality gate over the whole corpus. Prints one FAIL line per problem,
+    then a summary. Returns 1 when any paper fails or the inbox is not empty."""
+    papers_dir = Path(lit_dir) / "papers"
+    first, bad = {}, 0
+    paths = sorted(papers_dir.glob("*.json")) if papers_dir.is_dir() else []
+    for p in paths:
+        paper = json.loads(p.read_text(encoding="utf-8"))
+        key = fold(paper.get("display_name"))
+        dup_of = first.get(key) if key else None
+        first.setdefault(key, p.stem)
+        problems = audit_problems(paper, load_brief(lit_dir, p.stem), dup_of)
+        for problem in problems:
+            print("FAIL {0}: {1}".format(p.stem, problem))
+        bad += bool(problems)
+    inbox = count_inbox(lit_dir)
+    if inbox:
+        print("FAIL inbox: {0} entries pending".format(inbox))
+    print("audit papers={0} failing={1} inbox={2}".format(len(paths), bad, inbox))
+    return 1 if bad or inbox else 0
+
+def verb_merge(lit_dir, raw_old, raw_new):
+    """Fold a duplicate record (preprint, second version) into the kept one:
+    alias old -> new, repoint edges, merge the brief, delete the old record."""
+    old, new = bare_wid(raw_old), bare_wid(raw_new)
+    papers_dir = Path(lit_dir) / "papers"
+    if old == new or not (papers_dir / (new + ".json")).exists():
+        print("error: --into must name a different paper in the corpus",
+              file=sys.stderr)
+        return 1
+    if not (papers_dir / (old + ".json")).exists():
+        print("error: no paper record for {0}".format(old), file=sys.stderr)
+        return 1
+    aliases = load_aliases(lit_dir)
+    aliases[old] = new
+    save_aliases(lit_dir, aliases)
+    remap_brief(lit_dir, old, new)
+    (papers_dir / (old + ".json")).unlink()
+    write_edges(lit_dir, [])
+    regenerate_index(lit_dir)
+    print("merged: {0} -> {1}".format(old, new))
+    return 0
+
 def verb_brief_restub(lit_dir, raw_id):
     """Reset the agent shell and script-owned enrich fields of one brief to
     the pending stub shape. The human block and an already-set
@@ -1357,7 +1429,7 @@ def verb_brief_restub(lit_dir, raw_id):
 
 VERB_FLAGS = ("doi", "openalex", "arxiv", "title", "ids", "inbox", "status", "check",
               "enrich_pending", "brief_status", "brief_check",
-              "brief_write", "brief_restub")
+              "brief_write", "brief_restub", "audit", "merge")
 
 
 def build_parser():
@@ -1384,6 +1456,11 @@ def build_parser():
                    help="write the brief for --id from the --file payload")
     p.add_argument("--brief-restub", action="store_true",
                    help="reset the --id brief agent shell to pending")
+    p.add_argument("--audit", action="store_true",
+                   help="quality gate: every brief complete, no duplicates, empty inbox")
+    p.add_argument("--merge", metavar="W-ID",
+                   help="fold this duplicate record into --into")
+    p.add_argument("--into", metavar="W-ID", help="kept record for --merge")
     p.add_argument("--id", help="W-id target of --brief-write/--brief-restub")
     p.add_argument("--file", help="brief payload JSON path for --brief-write")
     p.add_argument("--human", action="store_true",
@@ -1408,7 +1485,8 @@ def pick_verb(args):
     if len(names) != 1:
         print("error: give exactly one of --doi/--openalex/--arxiv/--title/"
               "--ids/--inbox/--status/--check/--enrich-pending/"
-              "--brief-status/--brief-check/--brief-write/--brief-restub",
+              "--brief-status/--brief-check/--brief-write/--brief-restub/"
+              "--audit/--merge",
               file=sys.stderr)
         sys.exit(2)
     return names[0]
@@ -1429,6 +1507,11 @@ def validate_verb(args, verb):
     if verb in ("brief_write", "brief_restub"):
         if not args.id or not PAPER_ID_RE.match(bare_wid(args.id)):
             print("error: --id expects W-id or LOCAL-id", file=sys.stderr)
+            sys.exit(2)
+    if verb == "merge":
+        ids = (args.merge or "", args.into or "")
+        if not all(PAPER_ID_RE.match(bare_wid(i)) for i in ids):
+            print("error: --merge W-id needs --into W-id", file=sys.stderr)
             sys.exit(2)
     if verb == "brief_write" and not args.file:
         print("error: --brief-write needs --file <payload.json>", file=sys.stderr)
@@ -1495,6 +1578,10 @@ def main(argv=None):
             return verb_brief_write(lit_dir, args.id, args.file, args.human)
         elif verb == "brief_restub":
             return verb_brief_restub(lit_dir, args.id)
+        elif verb == "audit":
+            return verb_audit(lit_dir)
+        elif verb == "merge":
+            return verb_merge(lit_dir, args.merge, args.into)
     except BudgetExhausted:
         print(run.summary())
         print("budget exhausted; completed writes stand")

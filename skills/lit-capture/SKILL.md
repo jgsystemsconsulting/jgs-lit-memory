@@ -154,7 +154,25 @@ python "$HOME/.zcode/skills/lit-capture/lit_fetch.py" --brief-write --id W123 --
 python "$HOME/.zcode/skills/lit-capture/lit_fetch.py" --brief-check
 ```
 
-6. `git add .lit` together with papers and edges as today.
+6. Run the quality gate and fix every FAIL line before committing:
+
+```bash
+python "$HOME/.zcode/skills/lit-capture/lit_fetch.py" --audit
+```
+
+   The bar per paper: status `ready`; at least three claims; at least one
+   open question; at least one `related_in_corpus` link to another paper
+   in the corpus. When the paper record has an `oa_url`, read the full text,
+   because abstract basis then fails. Abstract basis passes only with `notes`
+   that say why full text was unavailable (paywalled, fetch failed). Two
+   records with the same title are one work in two versions, such as a
+   preprint and the published paper. Keep the published version and fold
+   the other into it with
+   `--merge W-old --into W-kept`. An inbox entry that cannot resolve must be
+   fixed (DOI or W-id) or deleted; the gate fails while the inbox holds
+   anything.
+
+7. `git add .lit` together with papers and edges as today.
 
 Honesty constraints: do not invent pages, tests, or results absent from the
 source basis; prefer claim `confidence` of `low` or `med` for abstract-only

@@ -1701,3 +1701,55 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+def _ready_brief(wid, n_claims=3, **agent_over):
+    b = lit_fetch.new_brief(wid)
+    fields = dict(overview="o", methods_tests="m", limits="l", why_it_matters="w",
+                  claims=[claim("c%d" % i) for i in range(n_claims)],
+                  open_questions=["q"], related_in_corpus=[{"id": "W9", "note": "n"}],
+                  notes="no open copy")
+    fields.update(agent_over)
+    b["agent"] = agent_shell(**fields)
+    ids = {c["id"] for c in b["agent"]["claims"]}
+    b["status"] = lit_fetch.derive_status(b["agent"], ids)
+    b["basis"] = lit_fetch.derive_basis(b["agent"])
+    return b
+
+
+def test_audit_problems():
+    paper = {"display_name": "P", "oa_url": None}
+    assert lit_fetch.audit_problems(paper, _ready_brief("W1")) == []
+    assert lit_fetch.audit_problems(paper, None) == ["no brief"]
+    thin = lit_fetch.audit_problems(paper, _ready_brief("W1", 2, open_questions=[]))
+    assert "2 claims, need 3" in thin and "no open_questions" in thin
+    oa = lit_fetch.audit_problems({"oa_url": "https://x"}, _ready_brief("W1"))
+    assert any("read the full text" in p for p in oa)
+    assert any("duplicate" in p for p in lit_fetch.audit_problems(paper, _ready_brief("W1"), "W0"))
+
+
+def test_audit_and_merge_end_to_end():
+    with tempfile.TemporaryDirectory() as tmp:
+        lit = pathlib.Path(tmp) / ".lit"
+        lit_fetch.ensure_corpus(lit)
+        for wid, refs in (("W1", ["W2", "W5"]), ("W2", ["W5"]), ("W3", ["W1"])):
+            rec = lit_fetch.normalize_work(make_payload(wid, refs), seed=True, source="t")
+            rec["display_name"] = "Same Title" if wid != "W3" else "Other"
+            lit_fetch.write_record(rec, lit)
+            write_brief_file(lit, wid, _ready_brief(wid))
+        lit_fetch.write_edges(lit, [{"source": "W1", "target": "W2"},
+                                    {"source": "W1", "target": "W5"},
+                                    {"source": "W2", "target": "W5"},
+                                    {"source": "W3", "target": "W1"}])
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            assert lit_fetch.verb_audit(lit) == 1
+        assert "FAIL W2: duplicate title of W1" in out.getvalue()
+        with contextlib.redirect_stdout(io.StringIO()):
+            assert lit_fetch.verb_merge(lit, "W1", "W2") == 0
+            assert lit_fetch.verb_merge(lit, "W1", "W2") == 1
+            assert lit_fetch.verb_audit(lit) == 0
+        assert not (lit / "papers" / "W1.json").exists()
+        assert not (lit / "briefs" / "W1.json").exists()
+        edges = {(e["source"], e["target"]) for e in lit_fetch.load_edges(lit)}
+        assert edges == {("W2", "W5"), ("W3", "W2")}
