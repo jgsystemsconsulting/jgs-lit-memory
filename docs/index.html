@@ -58,6 +58,59 @@
     <div class="cta">
       <a class="btn btn-primary" href="#install">Install <span aria-hidden="true">&rarr;</span></a>
       <a class="btn btn-ghost" href="#ask">How it runs <span aria-hidden="true">&rarr;</span></a>
+      <button type="button" class="btn btn-copy" id="install-copy">Copy install prompt</button>
+      <span class="copy-status" aria-live="polite"></span>
+      <details class="install-fallback">
+        <summary>Install AI agent</summary>
+        <pre id="install-prompt">You are installing jgs-lit-memory v1.2.1, an MIT agent skill pack by JG Systems
+Consulting Ltd: a local literature memory (paper records, citation edges,
+analysis briefs) in a git-tracked .lit corpus.
+Repository: https://github.com/jgsystemsconsulting/jgs-lit-memory
+Do this in order:
+1. Read README.md and docs/skill-usage.md. If the host is not ZCode, also read docs/other-agents.md.
+2. Check prerequisites: Python 3.9+ (stdlib only, no pip packages); network access to api.openalex.org (OpenAlex API key optional).
+3. Clone the repository, then run `python install.py --dry-run` and show me the plan.
+4. Run `python install.py` (ZCode, ~/.zcode/skills/lit-capture/) or `python install.py --agent claude` (~/.claude/skills/jgs/lit-capture/); use `--agent all` only if I want every supported host.
+5. Verify: the installed folder contains SKILL.md and lit_fetch.py (1 skill, per SKILLS.md).
+6. Remind me to fully restart the agent session, then try "Capture this one: 10.1038/nature12373".
+Pack content is MIT (see LICENSE). If a step fails, stop and report the failure.</pre>
+      </details>
+      <script>
+      (function () {
+        var btn = document.getElementById("install-copy");
+        var pre = document.getElementById("install-prompt");
+        var live = document.querySelector(".copy-status");
+        if (!btn || !pre || !live) return;
+        function report(ok) {
+          live.textContent = ok ? "Copied" : "Copy failed. Select the text below.";
+          if (!ok) {
+            var box = pre.closest("details");
+            if (box) box.open = true;
+          }
+        }
+        function legacy(text) {
+          var ta = document.createElement("textarea");
+          ta.value = text;
+          ta.setAttribute("readonly", "");
+          ta.style.position = "fixed";
+          ta.style.left = "-9999px";
+          document.body.appendChild(ta);
+          ta.select();
+          var ok = false;
+          try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+          document.body.removeChild(ta);
+          return ok;
+        }
+        btn.addEventListener("click", function () {
+          var text = pre.textContent;
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text).then(function () { report(true); }, function () { report(legacy(text)); });
+          } else {
+            report(legacy(text));
+          }
+        });
+      })();
+      </script>
     </div>
   </div>
   <img class="hero-card" src="title-card.png" width="1280" height="720" alt="Skill overview card for jgs-lit-memory: a git-tracked literature corpus of paper records, citations, and analysis briefs, with a QR code linking to the repository.">
