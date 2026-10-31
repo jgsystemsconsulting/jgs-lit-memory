@@ -103,6 +103,13 @@ def test_bare_ids():
     assert lit_fetch.bare_doi("") is None
 
 
+def test_paper_id_accepts_local():
+    assert lit_fetch.PAPER_ID_RE.match("W2741809807")
+    assert lit_fetch.PAPER_ID_RE.match("LOCAL-EUAIAct2024")
+    assert not lit_fetch.PAPER_ID_RE.match("LOCAL-")
+    assert not lit_fetch.PAPER_ID_RE.match("../etc")
+
+
 def test_reconstruct_abstract():
     assert lit_fetch.reconstruct_abstract(
         {"A": [0], "b": [1], "graph": [2, 4], "of": [3]}) == "A b graph of graph"

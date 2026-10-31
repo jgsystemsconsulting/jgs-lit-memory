@@ -132,6 +132,8 @@ PAGE_SIZE = 100
 
 REF_RE = re.compile(r"^(doi|arxiv|title):(.+)$", re.S)
 WID_RE = re.compile(r"^W\d+$")
+# Local manual captures (not OpenAlex): LOCAL-<token>
+PAPER_ID_RE = re.compile(r"^(?:W\d+|LOCAL-[A-Za-z0-9]+)$")
 
 
 def chunk_ids(ids, size=PAGE_SIZE):
@@ -1252,7 +1254,9 @@ def verb_brief_check(lit_dir, wid):
     d = briefs_dir(lit_dir)
     if wid and wid != "all":
         canonical = resolve_alias(bare_wid(wid), aliases)
-        canonical = canonical.upper()
+        # OpenAlex W-ids are uppercase; LOCAL-* keep original case
+        if WID_RE.match(canonical):
+            canonical = canonical.upper()
         p = brief_path(lit_dir, canonical)
         if not p.exists():
             print("error: no brief for {0}".format(canonical), file=sys.stderr)
@@ -1423,8 +1427,8 @@ def validate_verb(args, verb):
                   file=sys.stderr)
             sys.exit(2)
     if verb in ("brief_write", "brief_restub"):
-        if not args.id or not WID_RE.match(bare_wid(args.id)):
-            print("error: --id expects a W-id like W2741809807", file=sys.stderr)
+        if not args.id or not PAPER_ID_RE.match(bare_wid(args.id)):
+            print("error: --id expects W-id or LOCAL-id", file=sys.stderr)
             sys.exit(2)
     if verb == "brief_write" and not args.file:
         print("error: --brief-write needs --file <payload.json>", file=sys.stderr)
