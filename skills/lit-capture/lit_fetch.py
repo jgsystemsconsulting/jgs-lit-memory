@@ -64,6 +64,16 @@ def reconstruct_abstract(inv_idx):
     return " ".join(positions[i] for i in sorted(positions))
 
 
+def author_display_name(authorship):
+    """Return display_name, or None when author object or name absent."""
+    if not isinstance(authorship, dict):
+        return None
+    author = authorship.get("author")
+    if not isinstance(author, dict):
+        return None
+    return author.get("display_name") or None
+
+
 def normalize_work(payload, seed, source, captured_at=None):
     """Map a raw OpenAlex work object to the corpus record schema.
 
@@ -79,9 +89,9 @@ def normalize_work(payload, seed, source, captured_at=None):
         "publication_date": payload.get("publication_date"),
         "publication_year": payload.get("publication_year"),
         "cited_by_count": payload.get("cited_by_count"),
-        "authors": [a["author"]["display_name"]
+        "authors": [author_display_name(a)
                     for a in payload.get("authorships") or []
-                    if a.get("author", {}).get("display_name")],
+                    if author_display_name(a)],
         "topics": [t["display_name"] for t in payload.get("topics") or []
                    if t.get("display_name")],
         "oa_url": (payload.get("open_access") or {}).get("oa_url"),
@@ -109,7 +119,7 @@ def verify_title(query_title, candidates, author_surname=None, year=None):
     if author_surname is not None:
         s = author_surname.lower()
         matches = [c for c in matches
-                   if any(s in (a.get("author", {}).get("display_name") or "").lower()
+                   if any(s in (author_display_name(a) or "").lower()
                           for a in c.get("authorships") or [])]
     if year is not None:
         matches = [c for c in matches
