@@ -14,6 +14,8 @@ Single-source history for jgs-lit-memory. Tags are three-component semver
   titles and a non-empty inbox fail the gate.
 - `--merge <W-old> --into <W-kept>` folds a duplicate version into one record
   and repoints edges. The kept record's brief always wins.
+- `--audit` also fails related-paper links that point at the paper itself
+  or at a record not in the corpus.
 - A listed open-access copy that fails to download passes the gate when the
   notes start with `fulltext-unavailable:`, so records keep their `oa_url`.
 - `LOCAL-*` ids work in `--brief-write`, `--brief-check` and

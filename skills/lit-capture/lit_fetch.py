@@ -1339,7 +1339,7 @@ def verb_brief_write(lit_dir, raw_id, payload_path, human_flag):
 
 AUDIT_MIN_CLAIMS = 3
 
-def audit_problems(paper, brief, dup_of=None):
+def audit_problems(paper, brief, dup_of=None, held=None):
     """Quality bar a brief must meet beyond schema validity. Pure; returns
     problem strings. Abstract-only is accepted only when no open-access copy
     is recorded and the agent notes say why full text was not read."""
@@ -1357,6 +1357,12 @@ def audit_problems(paper, brief, dup_of=None):
         problems.append("no open_questions")
     if not a.get("related_in_corpus"):
         problems.append("no related_in_corpus")
+    for r in a.get("related_in_corpus") or []:
+        rid = r.get("id") if isinstance(r, dict) else None
+        if rid == brief.get("id"):
+            problems.append("related_in_corpus links to itself")
+        elif held is not None and rid not in held:
+            problems.append("related_in_corpus {0} is not in the corpus".format(rid))
     if brief.get("basis") == "abstract":
         notes = a.get("notes") or ""
         if paper.get("oa_url") and "fulltext-unavailable:" not in notes:
@@ -1374,12 +1380,13 @@ def verb_audit(lit_dir):
     papers_dir = Path(lit_dir) / "papers"
     first, bad = {}, 0
     paths = sorted(papers_dir.glob("*.json")) if papers_dir.is_dir() else []
+    held = {p.stem for p in paths}
     for p in paths:
         paper = json.loads(p.read_text(encoding="utf-8"))
         key = fold(paper.get("display_name"))
         dup_of = first.get(key) if key else None
         first.setdefault(key, p.stem)
-        problems = audit_problems(paper, load_brief(lit_dir, p.stem), dup_of)
+        problems = audit_problems(paper, load_brief(lit_dir, p.stem), dup_of, held)
         for problem in problems:
             print("FAIL {0}: {1}".format(p.stem, problem))
         bad += bool(problems)

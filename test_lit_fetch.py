@@ -1728,6 +1728,10 @@ def test_audit_problems():
     tried = _ready_brief("W1", notes="fulltext-unavailable: publisher 403")
     assert lit_fetch.audit_problems({"oa_url": "https://x"}, tried) == []
     assert any("duplicate" in p for p in lit_fetch.audit_problems(paper, _ready_brief("W1"), "W0"))
+    gone = lit_fetch.audit_problems(paper, _ready_brief("W1"), held={"W1"})
+    assert gone == ["related_in_corpus W9 is not in the corpus"]
+    selfie = _ready_brief("W1", related_in_corpus=[{"id": "W1", "note": "n"}])
+    assert lit_fetch.audit_problems(paper, selfie) == ["related_in_corpus links to itself"]
 
 
 def test_audit_and_merge_end_to_end():
@@ -1738,7 +1742,8 @@ def test_audit_and_merge_end_to_end():
             rec = lit_fetch.normalize_work(make_payload(wid, refs), seed=True, source="t")
             rec["display_name"] = "Same Title" if wid != "W3" else "Other"
             lit_fetch.write_record(rec, lit)
-            write_brief_file(lit, wid, _ready_brief(wid))
+            write_brief_file(lit, wid, _ready_brief(wid, related_in_corpus=[
+                {"id": "W3" if wid != "W3" else "W2", "note": "n"}]))
         lit_fetch.write_edges(lit, [{"source": "W1", "target": "W2"},
                                     {"source": "W1", "target": "W5"},
                                     {"source": "W2", "target": "W5"},
