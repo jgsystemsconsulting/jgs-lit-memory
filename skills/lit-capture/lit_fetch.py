@@ -1358,9 +1358,11 @@ def audit_problems(paper, brief, dup_of=None):
     if not a.get("related_in_corpus"):
         problems.append("no related_in_corpus")
     if brief.get("basis") == "abstract":
-        if paper.get("oa_url"):
-            problems.append("abstract basis but oa_url present; read the full text")
-        elif not present_str(a.get("notes")):
+        notes = a.get("notes") or ""
+        if paper.get("oa_url") and "fulltext-unavailable:" not in notes:
+            problems.append("abstract basis but oa_url present; read the full text, "
+                            "or record 'fulltext-unavailable: <what failed>' in notes")
+        elif not present_str(notes):
             problems.append("abstract basis needs notes saying why full text was not read")
     if dup_of:
         problems.append("duplicate title of {0}; merge with --merge".format(dup_of))
@@ -1402,7 +1404,12 @@ def verb_merge(lit_dir, raw_old, raw_new):
     aliases = load_aliases(lit_dir)
     aliases[old] = new
     save_aliases(lit_dir, aliases)
-    remap_brief(lit_dir, old, new)
+    # The kept record's brief describes the kept work; the duplicate's brief
+    # may describe another edition, so it never wins on mtime here.
+    if brief_path(lit_dir, new).exists():
+        brief_path(lit_dir, old).unlink(missing_ok=True)
+    else:
+        remap_brief(lit_dir, old, new)
     (papers_dir / (old + ".json")).unlink()
     write_edges(lit_dir, [])
     regenerate_index(lit_dir)

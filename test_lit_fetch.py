@@ -1725,6 +1725,8 @@ def test_audit_problems():
     assert "2 claims, need 3" in thin and "no open_questions" in thin
     oa = lit_fetch.audit_problems({"oa_url": "https://x"}, _ready_brief("W1"))
     assert any("read the full text" in p for p in oa)
+    tried = _ready_brief("W1", notes="fulltext-unavailable: publisher 403")
+    assert lit_fetch.audit_problems({"oa_url": "https://x"}, tried) == []
     assert any("duplicate" in p for p in lit_fetch.audit_problems(paper, _ready_brief("W1"), "W0"))
 
 
@@ -1751,5 +1753,7 @@ def test_audit_and_merge_end_to_end():
             assert lit_fetch.verb_audit(lit) == 0
         assert not (lit / "papers" / "W1.json").exists()
         assert not (lit / "briefs" / "W1.json").exists()
+        kept = json.loads((lit / "briefs" / "W2.json").read_text(encoding="utf-8"))
+        assert kept["id"] == "W2"
         edges = {(e["source"], e["target"]) for e in lit_fetch.load_edges(lit)}
         assert edges == {("W2", "W5"), ("W3", "W2")}

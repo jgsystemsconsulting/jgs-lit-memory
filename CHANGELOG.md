@@ -12,8 +12,10 @@ Single-source history for jgs-lit-memory. Tags are three-component semver
   three claims, an open question and a related-paper link. Abstract basis
   passes only when no open-access copy exists and the notes say why. Duplicate
   titles and a non-empty inbox fail the gate.
-- `--merge <W-old> --into <W-kept>` folds a duplicate version into one record,
-  repointing edges and merging briefs.
+- `--merge <W-old> --into <W-kept>` folds a duplicate version into one record
+  and repoints edges. The kept record's brief always wins.
+- A listed open-access copy that fails to download passes the gate when the
+  notes start with `fulltext-unavailable:`, so records keep their `oa_url`.
 - `LOCAL-*` ids work in `--brief-write`, `--brief-check` and
   `related_in_corpus`, for standards and regulations without an OpenAlex work.
 - Self-citation edges are dropped on write.

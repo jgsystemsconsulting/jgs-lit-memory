@@ -162,9 +162,12 @@ python "$HOME/.zcode/skills/lit-capture/lit_fetch.py" --audit
 
    The bar per paper: status `ready`; at least three claims; at least one
    open question; at least one `related_in_corpus` link to another paper
-   in the corpus. When the paper record has an `oa_url`, read the full text,
-   because abstract basis then fails. Abstract basis passes only with `notes`
-   that say why full text was unavailable (paywalled, fetch failed). Two
+   in the corpus. When the paper record has an `oa_url`, read the full text.
+   If that download fails, start `notes` with `fulltext-unavailable:` and
+   name what failed; never edit or clear `oa_url` to get past the gate.
+   Without an `oa_url`, abstract basis passes only with `notes` that say why
+   full text was unavailable (paywalled, no preprint). A claim's basis is
+   `fulltext` only when the claim was read in the full text. Two
    records with the same title are one work in two versions, such as a
    preprint and the published paper. Keep the published version and fold
    the other into it with
