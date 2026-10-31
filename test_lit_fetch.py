@@ -146,6 +146,19 @@ def test_normalize_work():
     assert rec2["venue"] is None
     assert rec2["doi"] is None
     assert rec2["seed"] is False and rec2["source"] == "fetch"
+    mixed = make_payload("W8800000001")
+    mixed["authorships"] = [
+        {"author": None},
+        None,
+        {"author": {"display_name": None}},
+        {"author": {"display_name": ""}},
+        {"author": "not-a-dict"},
+        {"author": {"display_name": "Jane Doe"}},
+    ]
+    rec_null = lit_fetch.normalize_work(
+        mixed, seed=False, source="fetch",
+        captured_at="2026-09-16T00:00:00Z")
+    assert rec_null["authors"] == ["Jane Doe"]
 
 
 def test_verify_title():
@@ -164,6 +177,21 @@ def test_verify_title():
     assert lit_fetch.verify_title(q, CANDIDATES, "Smith", None) is None
     # wrong year rejects
     assert lit_fetch.verify_title(q, CANDIDATES, None, "1999") is None
+    null_cand = make_payload("W8800000001")
+    null_cand["authorships"] = [{"author": None}]
+    q_null = "Paper W8800000001"
+    assert lit_fetch.verify_title(q_null, [null_cand], "Doe", None) is None
+    hit = lit_fetch.verify_title(q_null, [null_cand], None, 2020)
+    assert hit is null_cand
+    blank = make_payload("W8800000002")
+    blank["display_name"] = q_null
+    blank["authorships"] = [{"author": None}]
+    jane = make_payload("W8800000003")
+    jane["display_name"] = q_null
+    jane["authorships"] = [{"author": {"display_name": "Jane Doe"}}]
+    hit = lit_fetch.verify_title(q_null, [blank, jane], "Doe", None)
+    assert hit is jane
+    assert lit_fetch.verify_title(q_null, [null_cand], None, None) is null_cand
 
 
 # ---------------------------------------------------------------------------
@@ -1173,6 +1201,34 @@ def test_singleton_capture_and_alias():
             assert run2.skipped == 1 and run2.written == 0 and run2.failed == 0
 
 
+def test_null_author_capture_writes_stub():
+    wid = "W8800000001"
+    payload = make_payload(wid)
+    payload["authorships"] = [{"author": None}, None]
+    with tempfile.TemporaryDirectory() as tmp:
+        lit = pathlib.Path(tmp) / ".lit"
+
+        def handler(url):
+            assert "/works/" + wid + "?" in url
+            return (200, {"x-ratelimit-remaining": "9999"},
+                    json.dumps(payload))
+
+        with fake_http(handler):
+            run = lit_fetch.Run()
+            with contextlib.redirect_stdout(io.StringIO()):
+                lit_fetch.capture_identifier(wid, True, lit, None, run)
+        assert run.written == 1
+        assert run.failed == 0
+        paper_path = lit / "papers" / (wid + ".json")
+        assert paper_path.exists()
+        paper = json.loads(paper_path.read_text(encoding="utf-8"))
+        assert paper["authors"] == []
+        assert (lit / "briefs" / (wid + ".json")).exists()
+        brief = lit_fetch.load_brief(lit, wid)
+        assert brief["status"] == "pending"
+        assert brief["basis"] == "none"
+
+
 def test_title_verb_verification_gate():
     with tempfile.TemporaryDirectory() as tmp:
         lit = pathlib.Path(tmp) / ".lit"
@@ -1633,6 +1689,7 @@ CHECKS = [
     test_index_and_status_counts,
     test_run_summary,
     test_singleton_capture_and_alias,
+    test_null_author_capture_writes_stub,
     test_title_verb_verification_gate,
     test_url_builders,
     test_parse_envelope,
