@@ -1604,6 +1604,70 @@ def test_status_never_before_index():
         assert "last-synced: 20" in out2.getvalue()   # a real ISO timestamp
 
 
+def test_index_brief_drain_follows_writes():
+    with tempfile.TemporaryDirectory() as tmp:
+        lit = pathlib.Path(tmp) / ".lit"
+        lit_fetch.ensure_corpus(lit)
+        partial = lit_fetch.new_brief("W2")
+        partial["status"] = "partial"
+        write_brief_file(lit, "W2", partial)
+        (lit / "briefs" / "Wbad.json").write_text("not json", encoding="utf-8")
+        (lit / "briefs" / "W9.json.tmp").write_text("{}", encoding="utf-8")
+        lit_fetch.regenerate_index(lit)
+        index = (lit / "SKILL.md").read_text(encoding="utf-8")
+        assert "| briefs | 2 |" in index
+        assert "| briefs pending | 0 |" in index
+        assert "| briefs partial | 1 |" in index
+        # Stored status is partial. derive_status on this empty agent is pending.
+        assert lit_fetch.derive_status(partial["agent"], set()) == "pending"
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            assert lit_fetch.verb_status(lit) == 0
+        assert "briefs=2 briefs_pending=0 briefs_partial=1" in out.getvalue()
+
+    with tempfile.TemporaryDirectory() as tmp:
+        lit = pathlib.Path(tmp) / ".lit"
+        lit_fetch.ensure_corpus(lit)
+        (lit / "papers" / "W1.json").write_text(
+            json.dumps({"id": "W1", "captured_at": None}), encoding="utf-8")
+        write_brief_file(lit, "W1", lit_fetch.new_brief("W1"))
+        lit_fetch.regenerate_index(lit)
+        index = (lit / "SKILL.md").read_text(encoding="utf-8")
+        assert "| briefs | 1 |" in index
+        assert "| briefs pending | 1 |" in index
+        assert "| briefs partial | 0 |" in index
+        thin = {"agent": agent_shell(
+            overview="o", claims=[claim("c1", basis="fulltext")])}
+        with contextlib.redirect_stdout(io.StringIO()):
+            assert lit_fetch.verb_brief_write(
+                lit, "W1", write_payload(tmp, thin), False) == 0
+        assert lit_fetch.load_brief(lit, "W1")["status"] == "partial"
+        index = (lit / "SKILL.md").read_text(encoding="utf-8")
+        assert "| briefs | 1 |" in index
+        assert "| briefs pending | 0 |" in index
+        assert "| briefs partial | 1 |" in index
+        with contextlib.redirect_stdout(io.StringIO()):
+            assert lit_fetch.verb_brief_restub(lit, "W1") == 0
+        index = (lit / "SKILL.md").read_text(encoding="utf-8")
+        assert "| briefs pending | 1 |" in index
+        assert "| briefs partial | 0 |" in index
+        before = (lit / "SKILL.md").read_bytes()
+        with contextlib.redirect_stderr(io.StringIO()):
+            assert lit_fetch.verb_brief_write(
+                lit, "W1", write_payload(tmp, {"no": "agent"}), False) == 1
+        assert (lit / "SKILL.md").read_bytes() == before
+        with contextlib.redirect_stderr(io.StringIO()):
+            assert lit_fetch.verb_brief_restub(lit, "W404") == 1
+        assert (lit / "SKILL.md").read_bytes() == before
+
+    with tempfile.TemporaryDirectory() as tmp:
+        lit = pathlib.Path(tmp) / ".lit"
+        lit.mkdir()
+        with contextlib.redirect_stderr(io.StringIO()):
+            assert lit_fetch.verb_brief_restub(lit, "W1") == 1
+        assert not (lit / "SKILL.md").exists()
+
+
 def test_check_forms_fake():
     def handler(url):
         if "search=" in url:
@@ -2135,6 +2199,7 @@ CHECKS = [
     test_brief_check_usage_gate,
     test_verb_ids_hostile_response_id,
     test_http_get_host_pin,
+    test_index_brief_drain_follows_writes,
 ]
 
 
