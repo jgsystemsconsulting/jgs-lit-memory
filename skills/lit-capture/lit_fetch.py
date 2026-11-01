@@ -1448,6 +1448,7 @@ def verb_brief_write(lit_dir, raw_id, payload_path, human_flag):
         return 1
     atomic_write(brief_path(lit_dir, wid),
                  json.dumps(brief, indent=2, ensure_ascii=False) + "\n")
+    regenerate_index(lit_dir)
     print("brief written: {0} status={1} basis={2}".format(
         wid, brief["status"], brief["basis"]))
     return 0
@@ -1554,6 +1555,7 @@ def verb_brief_restub(lit_dir, raw_id):
     brief["human"] = existing.get("human") or empty_human_block()
     atomic_write(brief_path(lit_dir, wid),
                  json.dumps(brief, indent=2, ensure_ascii=False) + "\n")
+    regenerate_index(lit_dir)
     print("brief restubbed: {0}".format(wid))
     return 0
 
