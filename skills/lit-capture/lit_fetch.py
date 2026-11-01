@@ -848,19 +848,33 @@ def _retry_delay(headers, attempt_index):
     return BACKOFF_SCHEDULE[min(attempt_index, len(BACKOFF_SCHEDULE) - 1)]
 
 
+def _assert_openalex(url):
+    # ponytail: urllib follows redirects before geturl is visible; custom HTTPRedirectHandler if a later advisory forbids the off-host hop.
+    safe = re.sub(r"([?&]api_key=)[^&#]*", r"\g<1>REDACTED", url)
+    parsed = urllib.parse.urlparse(url)
+    host = (parsed.hostname or "").lower()
+    if (parsed.scheme != "https" or host != "api.openalex.org"
+            or parsed.port not in (None, 443)
+            or parsed.username or parsed.password):
+        raise urllib.error.URLError("rejected URL: " + safe)
+
+
 def http_get(url, timeout=TIMEOUT):
     """GET a URL. Returns (status, headers, body_text).
 
     Retries 429 and 5xx on the backoff schedule; Retry-After overrides.
     Always returns the tuple once a 200 body is in hand, including when
     x-ratelimit-remaining is 0: budget-abort is the caller's job (verb loops
-    stop before the next call). urllib follows 301 merge redirects itself;
-    the record body returned is already the canonical work.
+    stop before the next call). urllib still follows a 301. The returned
+    body is the canonical work when the final URL stayed on
+    https://api.openalex.org. An off-host final URL is rejected.
     """
+    _assert_openalex(url)
     for attempt in range(MAX_ATTEMPTS):
         req = urllib.request.Request(url, headers={"User-Agent": UA})
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
+                _assert_openalex(resp.geturl())
                 body = resp.read().decode("utf-8")
                 headers = {k.lower(): v for k, v in resp.headers.items()}
                 return resp.status, headers, body
