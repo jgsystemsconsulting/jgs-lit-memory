@@ -73,23 +73,23 @@ Repository: https://github.com/jgsystemsconsulting/jgs-lit-memory
 
 Do this in order.
 
-- Read README.md and docs/skill-usage.md. If the host is not ZCode, also read docs/other-agents.md.
-- Prerequisites: Python 3.9+ (stdlib only; no pip packages). Network access to api.openalex.org. An OpenAlex API key is optional.
-- Detect the agent host and install:
-    python install.py --dry-run
+1. Read README.md and docs/skill-usage.md. If the host is not ZCode, also read docs/other-agents.md.
+2. Prerequisites: Python 3.9+ (stdlib only; no pip packages). Network access to api.openalex.org. An OpenAlex API key is optional.
+3. Clone https://github.com/jgsystemsconsulting/jgs-lit-memory if you are not already in that clone. Run python install.py --dry-run and show the plan. Do not write files in this step.
+4. Install for the host you detected.
     python install.py                  # ZCode → ~/.zcode/skills/lit-capture/
     python install.py --agent claude   # Claude Code → ~/.claude/skills/jgs/lit-capture/
-  Use --agent all only if the user wants every supported host. Wrappers: install.sh, install.ps1.
-- Verify: the installed folder contains SKILL.md and lit_fetch.py (1 skill, matches SKILLS.md).
-- After capture, the skill drains the brief queue with --enrich-pending and writes briefs through the script (--brief-write); see docs/skill-usage.md.
-- Note the MIT licence in LICENSE.
+    python install.py --agent cursor   # from the project that should receive the rule; writes .cursor/rules/lit-capture.mdc only
+    --agent all installs user-global hosts only (zcode, claude, openclaw, copilot, codex, gemini). It does not install Cursor. Use it only if the user asked for every user-global host. Wrappers: install.sh, install.ps1. For Cursor, leave lit_fetch.py in this clone or in a native install. Do not copy it into .cursor/rules/.
+5. Verify by host. Do not apply the other host's check.
+    - Not Cursor: the installed folder contains SKILL.md and lit_fetch.py (1 skill, matches SKILLS.md).
+    - Cursor: the repo contains .cursor/rules/lit-capture.mdc. The script is this clone's skills/lit-capture/lit_fetch.py, or a native install elsewhere. See docs/other-agents.md.
+6. After each capture, drain the brief queue with --enrich-pending and write briefs through the script (--brief-write). See docs/skill-usage.md. Do not stop at capture.
+7. Tell the user to fully restart the agent session so it rediscovers skills, then show this first-run example: "Capture this one: 10.1038/nature12373".
 
-Finish by telling the user to fully restart the agent session so it
-rediscovers skills, and show the first-run examples from
-docs/skill-usage.md ("Capture this one: 10.1038/nature12373").
+Note the MIT licence in LICENSE.
 
-If a step fails (Python missing, wrong skill count, install path refused),
-stop and report the exact failure and the README section that applies.
+If a step fails (Python missing, wrong skill count on a non-Cursor install, install path refused, or a Cursor check that looks for lit_fetch.py inside .cursor/rules/), stop and report the exact failure and the README section that applies. Do not invent a layout.
 ```
 
 ## Usage
