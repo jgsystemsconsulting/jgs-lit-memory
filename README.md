@@ -117,7 +117,9 @@ flowchart LR
   I --> T[--inbox triage later]
   T --> F
   F --> C[papers/ + graph/edges.jsonl]
-  C --> Q
+  C --> B[briefs/ stub per paper]
+  B --> W["--brief-write drain"]
+  W --> Q
 ```
 
 Direct script use, one resolution verb per invocation:

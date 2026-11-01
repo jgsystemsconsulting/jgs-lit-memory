@@ -16,8 +16,7 @@ version (see RELEASE-INFO.txt), reproduction steps, and impact.
 ## Scope notes
 
 This pack writes only inside the project it is run in: the `.lit/` corpus
-directory (JSON records, JSONL edges, Markdown findings, an inbox queue, and
-a generated `.lit/SKILL.md`). Paper and brief ids are checked before any
+directory (JSON records, JSONL edges, analysis briefs in `.lit/briefs/`, Markdown findings, an inbox queue, and a generated `.lit/SKILL.md`). Paper and brief ids are checked before any
 path join, and the resolved path must stay under that corpus directory.
 Confinement is enforced on the write path and the response path. The one
 network component, `lit_fetch.py`, requests `api.openalex.org` over HTTPS.
