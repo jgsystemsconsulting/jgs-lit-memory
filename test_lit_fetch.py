@@ -1672,6 +1672,195 @@ def test_inbox_budget_abort_freezes_queue():
         assert inbox.read_text(encoding="utf-8") == ""
 
 
+def test_checked_id_and_confined_path():
+    assert issubclass(lit_fetch.IdentityError, ValueError)
+    assert lit_fetch.checked_id(
+        "https://openalex.org/W2741809807", lit_fetch.WID_RE) == "W2741809807"
+    assert lit_fetch.checked_id("W2741809807", lit_fetch.WID_RE) == "W2741809807"
+    for bad in ("../x", "/tmp/outside.json", "C:\\outside.json",
+                "foo\\bar", "LOCAL-EUAIAct2024"):
+        try:
+            lit_fetch.checked_id(bad, lit_fetch.WID_RE)
+            raise AssertionError("accepted " + bad)
+        except lit_fetch.IdentityError as exc:
+            assert str(exc) == "rejected id: " + lit_fetch.bare_wid(bad)
+    try:
+        lit_fetch.checked_id("", lit_fetch.WID_RE)
+        raise AssertionError("empty id must raise")
+    except lit_fetch.IdentityError:
+        pass
+    try:
+        lit_fetch.checked_id("LOCAL-../x", lit_fetch.PAPER_ID_RE)
+        raise AssertionError("accepted LOCAL-../x")
+    except lit_fetch.IdentityError as exc:
+        assert "rejected id:" in str(exc)
+    assert lit_fetch.checked_id(
+        "LOCAL-EUAIAct2024", lit_fetch.PAPER_ID_RE) == "LOCAL-EUAIAct2024"
+    assert lit_fetch.checked_id(
+        "W2741809807", lit_fetch.PAPER_ID_RE) == "W2741809807"
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        lit = root / ".lit"
+        try:
+            lit_fetch.confined_path(lit, "papers", "..", "..", "outside.txt")
+            raise AssertionError("expected IdentityError")
+        except lit_fetch.IdentityError as exc:
+            assert "path escapes corpus:" in str(exc)
+        assert not (root / "outside.txt").exists()
+        try:
+            lit_fetch.confined_path(lit, "..", ".lit-evil", "x")
+            raise AssertionError("sibling prefix must fail")
+        except lit_fetch.IdentityError:
+            pass
+        rel = pathlib.Path("rel-corpus")
+        got = lit_fetch.paper_path(rel, "W2741809807", lit_fetch.WID_RE)
+        assert got == rel / "papers" / "W2741809807.json"
+        assert got != got.resolve()
+        try:
+            lit_fetch.paper_path(rel, "W1")
+            raise AssertionError("pattern is required")
+        except TypeError:
+            pass
+        try:
+            lit_fetch.paper_path(rel, "LOCAL-EUAIAct2024", lit_fetch.WID_RE)
+            raise AssertionError("WID_RE must reject LOCAL-*")
+        except lit_fetch.IdentityError:
+            pass
+        local = lit_fetch.paper_path(
+            rel, "LOCAL-EUAIAct2024", lit_fetch.PAPER_ID_RE)
+        assert local == rel / "papers" / "LOCAL-EUAIAct2024.json"
+
+
+def test_write_record_rejects_escape():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        lit = root / ".lit"
+        try:
+            lit_fetch.write_record({"id": "../x"}, lit)
+            raise AssertionError("expected IdentityError")
+        except lit_fetch.IdentityError as exc:
+            assert str(exc) == "rejected id: ../x"
+        assert not (lit / "x.json").exists()
+        base = lit.resolve()
+        for p in root.rglob("*"):
+            resolved = p.resolve()
+            assert resolved == base or base in resolved.parents, resolved
+        good = lit_fetch.normalize_work(
+            make_payload("W2741809807"), seed=False, source="fetch",
+            captured_at="2026-09-16T00:00:00Z")
+        lit_fetch.write_record(good, lit)
+        assert (lit / "papers" / "W2741809807.json").is_file()
+        bp = lit_fetch.brief_path(lit, "LOCAL-EUAIAct2024")
+        assert bp == lit / "briefs" / "LOCAL-EUAIAct2024.json"
+        try:
+            lit_fetch.brief_path(lit, "../x")
+            raise AssertionError("expected IdentityError")
+        except lit_fetch.IdentityError as exc:
+            assert str(exc) == "rejected id: ../x"
+
+
+def test_parse_ids_rejects_partial():
+    try:
+        got = lit_fetch.parse_ids("W1|../x|W2")
+        raise AssertionError("returned " + repr(got))
+    except lit_fetch.IdentityError as exc:
+        assert str(exc) == "rejected id: ../x"
+    assert lit_fetch.parse_ids("W1||W1") == ["W1"]
+    assert lit_fetch.parse_ids("W1| |W2") == ["W1", "W2"]
+    assert lit_fetch.parse_ids("W1|https://openalex.org/|W1") == ["W1"]
+
+
+def test_verb_ids_bad_token_exits():
+    with tempfile.TemporaryDirectory() as tmp:
+        lit = pathlib.Path(tmp) / ".lit"
+
+        def handler(url):
+            return (200, {"x-ratelimit-remaining": "9"}, envelope([]))
+
+        err = io.StringIO()
+        exited = None
+        with fake_http(handler) as get:
+            with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+                try:
+                    lit_fetch.verb_ids("W1|../x", lit, None, False, lit_fetch.Run())
+                except SystemExit as exc:
+                    exited = exc.code
+        assert exited == 2
+        assert get.calls == []
+        assert err.getvalue().startswith("error:")
+        assert (lit / "papers").is_dir()
+
+
+def test_brief_check_usage_gate():
+    with tempfile.TemporaryDirectory() as tmp:
+        lit = pathlib.Path(tmp) / ".lit"
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+            try:
+                lit_fetch.main(["--brief-check", "../x", "--dir", str(lit)])
+                raise AssertionError("expected SystemExit")
+            except SystemExit as exc:
+                assert exc.code == 2
+        assert "error:" in err.getvalue()
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            assert lit_fetch.main(["--brief-check", "all", "--dir", str(lit)]) == 0
+            assert lit_fetch.main(
+                ["--brief-check", "LOCAL-EUAIAct2024", "--dir", str(lit)]) == 1
+
+
+def test_verb_ids_hostile_response_id():
+    hostile = make_payload("W9800000001")
+    hostile["id"] = "../x"
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        lit = root / ".lit"
+
+        def handler(url):
+            return (200, {"x-ratelimit-remaining": "9"}, envelope([hostile]))
+
+        with fake_http(handler):
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                run = lit_fetch.Run()
+                lit_fetch.verb_ids("W9800000001", lit, None, False, run)
+        assert run.written == 0 and run.failed == 1
+        assert run.failures[0][0] == "W9800000001"
+        assert run.failures[0][1] == "rejected id: ../x"
+        assert lit_fetch.load_aliases(lit) == {}
+        assert not (lit / "x.json").exists()
+        assert list((lit / "papers").glob("*.json")) == []
+        base = lit.resolve()
+        for p in root.rglob("*"):
+            resolved = p.resolve()
+            assert resolved == base or base in resolved.parents, resolved
+        assert (lit / "graph" / "edges.jsonl").is_file()
+    good = make_payload("W9800000002")
+    hostile_b = make_payload("W9800000003")
+    hostile_b["id"] = "../x"
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        lit = root / ".lit"
+
+        def handler(url):
+            return (200, {"x-ratelimit-remaining": "9"},
+                    envelope([good, hostile_b]))
+
+        with fake_http(handler):
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                run = lit_fetch.Run()
+                lit_fetch.verb_ids(
+                    "W9800000002|W9800000003", lit, None, False, run)
+        assert run.written == 1
+        assert run.failures[0][0] == "W9800000003"
+        assert "404" in run.failures[0][1]
+        assert "use --openalex" in run.failures[0][1]
+        names = sorted(p.name for p in (lit / "papers").glob("*.json"))
+        assert names == ["W9800000002.json"]
+        base = lit.resolve()
+        for p in root.rglob("*"):
+            resolved = p.resolve()
+            assert resolved == base or base in resolved.parents, resolved
+
+
 CHECKS = [
     test_fold,
     test_bare_ids,
@@ -1736,6 +1925,12 @@ CHECKS = [
     test_brief_write_status_levels,
     test_brief_restub_keeps_human_and_stamp,
     test_brief_write_cli_flags,
+    test_checked_id_and_confined_path,
+    test_write_record_rejects_escape,
+    test_parse_ids_rejects_partial,
+    test_verb_ids_bad_token_exits,
+    test_brief_check_usage_gate,
+    test_verb_ids_hostile_response_id,
 ]
 
 
