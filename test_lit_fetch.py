@@ -932,8 +932,12 @@ def test_brief_write_cli_flags():
 
 
 def test_render_index():
-    text = lit_fetch.render_index(3, 10, 5, 1, "2026-09-16T00:00:00Z")
+    text = lit_fetch.render_index(3, 10, 5, 1, 7, 6, 8, "2026-09-16T00:00:00Z")
     assert "| 3 |" in text and "| 10 |" in text and "| 5 |" in text and "| 1 |" in text
+    assert "| briefs | 7 |" in text
+    assert "| briefs pending | 6 |" in text
+    assert "| briefs partial | 8 |" in text
+    assert "briefs/" in text
     assert "last-synced: 2026-09-16T00:00:00Z" in text
     assert "biased" in text and "CC0" in text
     assert "\u2014" not in lit_fetch.INDEX_TEMPLATE
@@ -992,6 +996,9 @@ def test_index_and_status_counts():
         assert "| 1 |" in index
         assert "boundary" in index.lower()
         assert "last-synced: " in index
+        assert "| briefs | 0 |" in index
+        assert "| briefs pending | 0 |" in index
+        assert "| briefs partial | 0 |" in index
         assert lit_fetch.boundary_nodes(lit) == {"W2222222222", "W3333333333"}
         assert lit_fetch.count_inbox(lit) == 0
         (lit / "inbox.jsonl").write_text('{"ref": "W1"}\n{"ref": "W2"}\n',
@@ -1585,8 +1592,9 @@ def test_status_never_before_index():
         with contextlib.redirect_stdout(out):
             assert lit_fetch.verb_status(lit) == 0
         text = out.getvalue()
-        assert "papers=1 edges=2 boundary=2 inbox_pending=0" in text
+        assert "papers=1 edges=2 boundary=2 inbox_pending=0 briefs=0 briefs_pending=0 briefs_partial=0" in text
         assert "last-synced: never" in text
+        assert not (lit / "briefs").exists()
         # after a regeneration the real timestamp shows up
         lit_fetch.regenerate_index(lit)
         out2 = io.StringIO()
