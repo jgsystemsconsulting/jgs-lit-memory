@@ -1438,6 +1438,80 @@ def test_inbox_triage_flow():
             assert len(lines_left) == 1     # only the malformed entry remains
 
 
+def test_inbox_corrupt_line():
+    with tempfile.TemporaryDirectory() as tmp:
+        lit = pathlib.Path(tmp) / ".lit"
+        lit_fetch.ensure_corpus(lit)
+        inbox = lit / "inbox.jsonl"
+        inbox.write_text(
+            "{not-json\n"
+            + json.dumps({"ref": "W1111111111"}) + "\n"
+            + "null\n",
+            encoding="utf-8")
+        before = inbox.read_bytes()
+
+        entries = lit_fetch.read_inbox(lit)
+        assert len(entries) == 3
+        assert inbox.read_bytes() == before
+        assert entries[0] == {
+            "ref": "{not-json",
+            "_ref": None,
+            "_fail_reason": "unparseable JSON line",
+        }
+        assert entries[1] == {
+            "ref": "W1111111111",
+            "_ref": ("wid", "W1111111111"),
+        }
+        assert entries[2] == {
+            "ref": "null",
+            "_ref": None,
+            "_fail_reason": "unparseable JSON line",
+        }
+
+        def handler(url):
+            assert "search=" not in url
+            return (200, {"x-ratelimit-remaining": "9999"},
+                    json.dumps(SAMPLE_PAYLOAD))
+
+        err = io.StringIO()
+        with fake_http(handler):
+            with contextlib.redirect_stdout(io.StringIO()), \
+                    contextlib.redirect_stderr(err):
+                run = lit_fetch.Run()
+                lit_fetch.verb_inbox(lit, None, run)
+        assert run.written == 1
+        assert run.skipped == 0
+        assert run.failed == 2
+        assert len(run.failures) == 2
+        assert [i for i, _r in run.failures] == ["{not-json", "null"]
+        assert [_r for _i, _r in run.failures] == [
+            "unparseable JSON line", "unparseable JSON line"]
+        assert err.getvalue() == ""
+        assert (lit / "papers" / "W1111111111.json").exists()
+        remaining = [json.loads(line) for line in
+                     inbox.read_text(encoding="utf-8").splitlines() if line.strip()]
+        assert remaining == [
+            {"ref": "{not-json", "last_error": "unparseable JSON line"},
+            {"ref": "null", "last_error": "unparseable JSON line"},
+        ]
+
+        err2 = io.StringIO()
+        with fake_http(handler):
+            with contextlib.redirect_stdout(io.StringIO()), \
+                    contextlib.redirect_stderr(err2):
+                run2 = lit_fetch.Run()
+                lit_fetch.verb_inbox(lit, None, run2)
+        assert run2.written == 0
+        assert run2.failed == 2
+        assert err2.getvalue() == ""
+        remaining2 = [json.loads(line) for line in
+                      inbox.read_text(encoding="utf-8").splitlines() if line.strip()]
+        assert remaining2 == [
+            {"ref": "{not-json", "last_error": "unparseable ref"},
+            {"ref": "null", "last_error": "unparseable ref"},
+        ]
+
+
 # ---------------------------------------------------------------------------
 # checks: status and check verbs
 # ---------------------------------------------------------------------------
@@ -1952,6 +2026,7 @@ CHECKS = [
     test_batch_single_id_merge,
     test_budget_abort_keeps_completed_writes,
     test_inbox_triage_flow,
+    test_inbox_corrupt_line,
     test_status_never_before_index,
     test_check_forms_fake,
     test_backoff_exhausted_redacts_key,
