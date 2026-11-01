@@ -1319,6 +1319,64 @@ def test_batch_skips_and_reports_absent():
         assert "use --openalex" in run.failures[0][1]
 
 
+def test_batch_alias_preskip():
+    with tempfile.TemporaryDirectory() as tmp:
+        lit = pathlib.Path(tmp) / ".lit"
+        lit_fetch.ensure_corpus(lit)
+        lit_fetch.write_record(
+            lit_fetch.normalize_work(make_payload("W1111111111"), seed=True,
+                                     source="capture",
+                                     captured_at="2026-09-16T00:00:00Z"), lit)
+        lit_fetch.write_record(
+            lit_fetch.normalize_work(make_payload("W9000000001"), seed=True,
+                                     source="capture",
+                                     captured_at="2026-09-16T00:00:00Z"), lit)
+        saved = {
+            "W2222222222": "W3333333333",
+            "W3333333333": "W1111111111",
+            "W9000000001": "not-a-wid",
+        }
+        lit_fetch.save_aliases(lit, saved)
+        assert not (lit / "papers" / "W3333333333.json").exists()
+
+        calls = []
+
+        def handler(url):
+            calls.append(url)
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
+            wids = q["filter"][0].split(":")[1].split("|")
+            return (200, {"x-ratelimit-remaining": "9"},
+                    envelope([make_payload(w) for w in wids]))
+
+        with fake_http(handler):
+            with contextlib.redirect_stdout(io.StringIO()):
+                run = lit_fetch.Run()
+                lit_fetch.verb_ids("W2222222222|W9000000001|W9000000004",
+                                   lit, None, False, run)
+            assert len(calls) == 1
+            got = urllib.parse.parse_qs(
+                urllib.parse.urlparse(calls[0]).query)["filter"][0].split(":")[1].split("|")
+            assert got == ["W9000000004"], got
+            assert run.written == 1
+            assert run.skipped == 2
+            assert run.failed == 0
+            assert run.failures == []
+            assert (lit / "papers" / "W9000000004.json").exists()
+            assert not (lit / "papers" / "W2222222222.json").exists()
+            assert not (lit / "papers" / "W3333333333.json").exists()
+            assert lit_fetch.load_aliases(lit) == saved
+
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                run2 = lit_fetch.Run()
+                lit_fetch.verb_ids("W2222222222|W9000000001", lit, None, False, run2)
+            assert len(calls) == 1
+            assert run2.written == 0
+            assert run2.skipped == 2
+            assert run2.failed == 0
+            assert err.getvalue() == ""
+
+
 def test_batch_single_id_merge():
     """R3b: single-id chunk whose response has exactly one different canonical
     is treated as a 301 merge (alias + write under the canonical id)."""
@@ -2023,6 +2081,7 @@ CHECKS = [
     test_http_404_propagates,
     test_batch_two_chunks_and_keyless_warning,
     test_batch_skips_and_reports_absent,
+    test_batch_alias_preskip,
     test_batch_single_id_merge,
     test_budget_abort_keeps_completed_writes,
     test_inbox_triage_flow,
