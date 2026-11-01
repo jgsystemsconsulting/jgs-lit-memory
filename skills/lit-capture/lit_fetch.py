@@ -83,7 +83,7 @@ def normalize_work(payload, seed, source, captured_at=None):
     if captured_at is None:
         captured_at = now_iso()
     return {
-        "id": bare_wid(payload["id"]),
+        "id": checked_id(payload["id"], WID_RE),
         "doi": bare_doi(payload.get("doi")),
         "display_name": payload.get("display_name"),
         "publication_date": payload.get("publication_date"),
@@ -144,6 +144,33 @@ REF_RE = re.compile(r"^(doi|arxiv|title):(.+)$", re.S)
 WID_RE = re.compile(r"^W\d+$")
 # Local manual captures (not OpenAlex): LOCAL-<token>
 PAPER_ID_RE = re.compile(r"^(?:W\d+|LOCAL-[A-Za-z0-9]+)$")
+
+
+class IdentityError(ValueError):
+    """Id rejected before a path join or an OpenAlex id filter."""
+
+
+def checked_id(value, pattern):
+    """bare_wid, then pattern.match. An empty string fails the match and
+    raises like any other bad id; only parse_ids skips empty tokens."""
+    bare = bare_wid(value)
+    if not pattern.match(bare):
+        raise IdentityError("rejected id: " + bare)
+    return bare
+
+
+def confined_path(lit_dir, *parts):
+    """Join under lit_dir. Refuse a resolved path that is not lit_dir or a child."""
+    base = Path(lit_dir).resolve()
+    path = Path(lit_dir).joinpath(*parts)
+    resolved = path.resolve()
+    if resolved != base and base not in resolved.parents:
+        raise IdentityError("path escapes corpus: " + str(resolved))
+    return path
+
+
+def paper_path(lit_dir, wid, pattern):
+    return confined_path(lit_dir, "papers", checked_id(wid, pattern) + ".json")
 
 
 def chunk_ids(ids, size=PAGE_SIZE):
@@ -603,7 +630,7 @@ class Run:
 
 def write_record(record, lit_dir):
     """Atomically write one normalized record. File name equals record id."""
-    atomic_write(Path(lit_dir) / "papers" / (record["id"] + ".json"),
+    atomic_write(paper_path(lit_dir, record["id"], WID_RE),
                  json.dumps(record, indent=2, ensure_ascii=False) + "\n")
 
 
@@ -617,7 +644,7 @@ def write_one(payload, lit_dir, run, seed, source):
     the pending brief stub; a stub failure is surfaced as brief_stub_failed
     and counted as a run failure (never silent), while the paper write stands."""
     record = normalize_work(payload, seed=seed, source=source)
-    path = Path(lit_dir) / "papers" / (record["id"] + ".json")
+    path = paper_path(lit_dir, record["id"], WID_RE)
     if path.exists():
         run.skipped += 1
         return record, False
@@ -686,7 +713,7 @@ def remap_brief(lit_dir, old, new):
             human[key] = value
         winner = dict(winner)
         winner["human"] = human
-    paper_p = Path(lit_dir) / "papers" / (new + ".json")
+    paper_p = paper_path(lit_dir, new, PAPER_ID_RE)
     if paper_p.exists():
         winner["paper_captured_at"] = paper_capture_stamp(
             json.loads(paper_p.read_text(encoding="utf-8")))
@@ -746,7 +773,7 @@ def briefs_dir(lit_dir):
 
 
 def brief_path(lit_dir, wid):
-    return briefs_dir(lit_dir) / (wid + ".json")
+    return confined_path(lit_dir, "briefs", checked_id(wid, PAPER_ID_RE) + ".json")
 
 
 def load_brief(lit_dir, wid):
@@ -766,7 +793,7 @@ def ensure_brief_stub(lit_dir, wid):
     p = brief_path(lit_dir, wid)
     if p.exists():
         return False
-    paper_p = Path(lit_dir) / "papers" / (wid + ".json")
+    paper_p = paper_path(lit_dir, wid, PAPER_ID_RE)
     captured = None
     if paper_p.exists():
         captured = paper_capture_stamp(
@@ -911,7 +938,7 @@ def capture_identifier(identifier, is_wid_form, lit_dir, api_key, run):
     ensure_corpus(lit_dir)
     status, headers, body = http_get(work_url(identifier, api_key))
     payload = json.loads(body)
-    canonical = bare_wid(payload["id"])
+    canonical = checked_id(payload["id"], WID_RE)
     requested = bare_wid(identifier) if is_wid_form else None
     aliases = load_aliases(lit_dir)
     if requested and requested != canonical and requested not in aliases:
@@ -954,11 +981,17 @@ def verb_title(title, author, year, lit_dir, api_key, run):
 
 
 def parse_ids(raw):
-    """Split a pipe-separated id string, normalize, dedupe, preserve order."""
+    """Split a pipe-separated id string, normalize, dedupe, preserve order.
+
+    A part that bare_wid reduces to empty is skipped. Any other part that
+    is not a W-id raises IdentityError. The call does not return a partial list.
+    """
     out, seen = [], set()
     for part in str(raw).split("|"):
-        w = bare_wid(part)
-        if w and w not in seen:
+        if not bare_wid(part):
+            continue
+        w = checked_id(part, WID_RE)
+        if w not in seen:
             seen.add(w)
             out.append(w)
     return out
@@ -973,12 +1006,15 @@ def verb_ids(raw_ids, lit_dir, api_key, seed_flag, run):
     failure; completed writes stand. Index regenerates when the record set or
     the edge set changed."""
     ensure_corpus(lit_dir)
-    ids = parse_ids(raw_ids)
+    try:
+        ids = parse_ids(raw_ids)
+    except IdentityError as exc:
+        print("error: " + str(exc), file=sys.stderr)
+        sys.exit(2)
     if not ids:
         print("error: --ids needs at least one W-id", file=sys.stderr)
         sys.exit(2)
-    papers_dir = Path(lit_dir) / "papers"
-    todo = [w for w in ids if not (papers_dir / (w + ".json")).exists()]
+    todo = [w for w in ids if not paper_path(lit_dir, w, WID_RE).exists()]
     run.skipped += len(ids) - len(todo)
     if not todo:
         return
@@ -1003,7 +1039,11 @@ def verb_ids(raw_ids, lit_dir, api_key, seed_flag, run):
                 run.fail(wid, "404; requested id absent from response; "
                          "use --openalex for merged ids")
                 continue
-            canonical = bare_wid(payload["id"])
+            try:
+                canonical = checked_id(payload["id"], WID_RE)
+            except IdentityError as exc:
+                run.fail(wid, str(exc))
+                continue
             if canonical != wid and wid not in aliases:
                 aliases[wid] = canonical
                 save_aliases(lit_dir, aliases)
@@ -1293,7 +1333,7 @@ def verb_brief_write(lit_dir, raw_id, payload_path, human_flag):
     is left untouched and no temp file is left behind."""
     aliases = load_aliases(lit_dir)
     wid = resolve_alias(bare_wid(raw_id), aliases)
-    paper_p = Path(lit_dir) / "papers" / (wid + ".json")
+    paper_p = paper_path(lit_dir, wid, PAPER_ID_RE)
     if not paper_p.exists():
         print("error: no paper record for {0}; fetch the paper before "
               "writing its brief".format(wid), file=sys.stderr)
@@ -1410,12 +1450,13 @@ def verb_merge(lit_dir, raw_old, raw_new):
     """Fold a duplicate record (preprint, second version) into the kept one:
     alias old -> new, repoint edges, merge the brief, delete the old record."""
     old, new = bare_wid(raw_old), bare_wid(raw_new)
-    papers_dir = Path(lit_dir) / "papers"
-    if old == new or not (papers_dir / (new + ".json")).exists():
+    old_p = paper_path(lit_dir, old, PAPER_ID_RE)
+    new_p = paper_path(lit_dir, new, PAPER_ID_RE)
+    if old == new or not new_p.exists():
         print("error: --into must name a different paper in the corpus",
               file=sys.stderr)
         return 1
-    if not (papers_dir / (old + ".json")).exists():
+    if not old_p.exists():
         print("error: no paper record for {0}".format(old), file=sys.stderr)
         return 1
     aliases = load_aliases(lit_dir)
@@ -1427,7 +1468,7 @@ def verb_merge(lit_dir, raw_old, raw_new):
         brief_path(lit_dir, old).unlink(missing_ok=True)
     else:
         remap_brief(lit_dir, old, new)
-    (papers_dir / (old + ".json")).unlink()
+    old_p.unlink()
     write_edges(lit_dir, [])
     regenerate_index(lit_dir)
     print("merged: {0} -> {1}".format(old, new))
@@ -1536,6 +1577,11 @@ def validate_verb(args, verb):
         ids = (args.merge or "", args.into or "")
         if not all(PAPER_ID_RE.match(bare_wid(i)) for i in ids):
             print("error: --merge W-id needs --into W-id", file=sys.stderr)
+            sys.exit(2)
+    if verb == "brief_check" and args.brief_check != "all":
+        if not args.brief_check or not PAPER_ID_RE.match(bare_wid(args.brief_check)):
+            print("error: --brief-check expects W-id or LOCAL-id",
+                  file=sys.stderr)
             sys.exit(2)
     if verb == "brief_write" and not args.file:
         print("error: --brief-write needs --file <payload.json>", file=sys.stderr)
