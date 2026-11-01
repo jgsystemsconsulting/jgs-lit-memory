@@ -10,8 +10,9 @@ description: Capture scholarly papers met in research conversations into this pr
 
 Run this as a procedure. The corpus lives in `.lit/` at the root of the current
 project repo and is git-tracked there. The script `lit_fetch.py` is the only
-component that touches the network, and it talks to OpenAlex only. Everything
-else is agent reading and writing.
+component that touches the network. It requests `api.openalex.org` over HTTPS
+and rejects a response whose final host is not that host.
+Everything else is agent reading and writing.
 
 Invoke the script by its installed path so no PATH setup is needed:
 

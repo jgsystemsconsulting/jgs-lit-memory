@@ -17,8 +17,12 @@ version (see RELEASE-INFO.txt), reproduction steps, and impact.
 
 This pack writes only inside the project it is run in: the `.lit/` corpus
 directory (JSON records, JSONL edges, Markdown findings, an inbox queue, and
-a generated `.lit/SKILL.md`). The one network component, `lit_fetch.py`,
-calls `api.openalex.org` over HTTPS and nothing else. It holds no secrets:
+a generated `.lit/SKILL.md`). Paper and brief ids are checked before any
+path join, and the resolved path must stay under that corpus directory.
+Confinement is enforced on the write path and the response path. The one
+network component, `lit_fetch.py`, requests `api.openalex.org` over HTTPS.
+A response whose final URL is not on that host is rejected and not returned.
+It holds no secrets:
 the optional OpenAlex API key is read from `--api-key` or the
 `OPENALEX_API_KEY` environment variable and is never written into the corpus.
 The pack does not phone home and ships no binaries.
