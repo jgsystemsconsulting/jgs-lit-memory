@@ -1040,18 +1040,23 @@ def fake_http(handler):
 def fake_urlopen(handler):
     """Patch urllib.request.urlopen UNDER the real lit_fetch.http_get, for
     tests that exercise retry/backoff logic itself. handler(url) returns
-    (status, headers, body_text) or raises. Restores http_get and urlopen
+    (status, headers, body_text), or that triple plus a final URL, or raises.
+    A 3-tuple uses the request URL as geturl(). Restores http_get and urlopen
     on exit. Yields the seen-URLs list."""
     calls = []
 
     class FakeResp:
-        def __init__(self, status, headers, body):
+        def __init__(self, status, headers, body, final_url):
             self.status = status
             self.headers = dict(headers)
             self._body = body
+            self._final_url = final_url
 
         def read(self):
             return self._body.encode("utf-8")
+
+        def geturl(self):
+            return self._final_url
 
         def __enter__(self):
             return self
@@ -1065,7 +1070,9 @@ def fake_urlopen(handler):
         result = handler(url)
         if isinstance(result, Exception):
             raise result
-        return FakeResp(*result)
+        status, headers, body = result[:3]
+        final = result[3] if len(result) >= 4 else url
+        return FakeResp(status, headers, body, final)
 
     prev_http = lit_fetch.http_get
     prev_urlopen = lit_fetch.urllib.request.urlopen
@@ -1861,6 +1868,60 @@ def test_verb_ids_hostile_response_id():
             assert resolved == base or base in resolved.parents, resolved
 
 
+def test_http_get_host_pin():
+    def on_host(url):
+        return (200, {"x-ratelimit-remaining": "9"}, "BODY",
+                "https://api.openalex.org/works/W999")
+
+    with fake_urlopen(on_host) as calls:
+        status, headers, body = lit_fetch.http_get(
+            "https://api.openalex.org/works/W1")
+    assert status == 200 and body == "BODY"
+    assert calls == ["https://api.openalex.org/works/W1"]
+
+    def on_host_key(url):
+        return (200, {}, "BODY",
+                "https://api.openalex.org/works/W999?api_key=SECRET")
+
+    with fake_urlopen(on_host_key):
+        status, headers, body = lit_fetch.http_get(
+            "https://api.openalex.org/works/W1")
+    assert body == "BODY"
+
+    def evil(url):
+        return (200, {}, "STOLEN",
+                "https://evil.example/steal?api_key=SECRET")
+
+    with fake_urlopen(evil) as calls:
+        try:
+            lit_fetch.http_get("https://api.openalex.org/works/W1")
+            raise AssertionError("expected URLError")
+        except lit_fetch.urllib.error.URLError as exc:
+            text = str(exc)
+            assert "REDACTED" in text
+            assert "SECRET" not in text
+            assert "STOLEN" not in text
+    assert len(calls) == 1
+
+    with fake_urlopen(lambda url: (200, {}, "NO")) as calls:
+        try:
+            lit_fetch.http_get("https://evil.example/")
+            raise AssertionError("expected URLError")
+        except lit_fetch.urllib.error.URLError as exc:
+            assert "rejected URL" in str(exc)
+    assert calls == []
+
+    def http_final(url):
+        return (200, {}, "BODY", "http://api.openalex.org/works/W1")
+
+    with fake_urlopen(http_final):
+        try:
+            lit_fetch.http_get("https://api.openalex.org/works/W1")
+            raise AssertionError("expected URLError")
+        except lit_fetch.urllib.error.URLError:
+            pass
+
+
 CHECKS = [
     test_fold,
     test_bare_ids,
@@ -1931,6 +1992,7 @@ CHECKS = [
     test_verb_ids_bad_token_exits,
     test_brief_check_usage_gate,
     test_verb_ids_hostile_response_id,
+    test_http_get_host_pin,
 ]
 
 
