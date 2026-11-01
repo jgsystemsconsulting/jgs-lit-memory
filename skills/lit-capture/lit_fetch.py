@@ -1012,8 +1012,9 @@ def parse_ids(raw):
 
 
 def verb_ids(raw_ids, lit_dir, api_key, seed_flag, run):
-    """Batch fetch by W-id. Skips ids already in the corpus before chunking,
-    warns keyless before the budgeted call, writes seed=false source="fetch"
+    """Batch fetch by W-id. Skips ids already in the corpus before chunking.
+    An id whose alias-resolved canonical file exists is skipped the same way, before the keyless warning.
+    Warns keyless before the budgeted call, writes seed=false source="fetch"
     records (seed_flag overrides), unions edges once per chunk, and reports
     ids absent from a response as 404 failures. When a response carries
     x-ratelimit-remaining 0, remaining chunks are aborted with one budget
@@ -1028,12 +1029,14 @@ def verb_ids(raw_ids, lit_dir, api_key, seed_flag, run):
     if not ids:
         print("error: --ids needs at least one W-id", file=sys.stderr)
         sys.exit(2)
-    todo = [w for w in ids if not paper_path(lit_dir, w, WID_RE).exists()]
+    aliases = load_aliases(lit_dir)
+    todo = [w for w in ids
+            if not paper_path(lit_dir, w, WID_RE).exists()
+            and not paper_path(lit_dir, resolve_alias(w, aliases), WID_RE).exists()]
     run.skipped += len(ids) - len(todo)
     if not todo:
         return
     warn_keyless("batch --ids", api_key)
-    aliases = load_aliases(lit_dir)
     edges_before = len(load_edges(lit_dir))
     chunks = chunk_ids(todo)
     for i, chunk in enumerate(chunks):
