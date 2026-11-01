@@ -1085,15 +1085,28 @@ def verb_ids(raw_ids, lit_dir, api_key, seed_flag, run):
 
 def read_inbox(lit_dir):
     """Read inbox entries as dicts, skipping blank lines. Attaches the parsed
-    ref as the internal "_ref" key (None when unparseable)."""
+    ref as the internal "_ref" key (None when unparseable). A line that is not
+    a JSON object is kept as a dict with the raw line in "ref", "_ref" None,
+    and "_fail_reason" set. This function does not write and does not record
+    a failure."""
     p = Path(lit_dir) / "inbox.jsonl"
     if not p.exists():
         return []
     entries = []
+    # ponytail: file-level UnicodeDecodeError from read_text still aborts
+    # before the per-line guard. Upgrade path: a decode handler on the read
+    # if a later finding requires it.
     for line in p.read_text(encoding="utf-8").splitlines():
         if not line.strip():
             continue
-        entry = json.loads(line)
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            entry = None
+        if not isinstance(entry, dict):
+            entries.append({"ref": line, "_ref": None,
+                            "_fail_reason": "unparseable JSON line"})
+            continue
         entry["_ref"] = parse_ref(entry.get("ref"))
         entries.append(entry)
     return entries
@@ -1119,7 +1132,8 @@ def resolve_entry(entry, kind, value, lit_dir, api_key, run):
 def verb_inbox(lit_dir, api_key, run):
     """Triage the inbox: dedupe, resolve every entry, then rewrite the inbox
     exactly once, atomically, keeping only entries that remain. Failures stay
-    queued with their reason in "last_error". A BudgetExhausted abort
+    queued with their reason in "last_error". A line that is not a JSON object
+    is kept the same way, raw text in "ref". A BudgetExhausted abort
     re-raises before the rewrite, leaving the original queue file intact, and
     re-runs are idempotent through skip-if-exists."""
     entries = read_inbox(lit_dir)
@@ -1127,8 +1141,9 @@ def verb_inbox(lit_dir, api_key, run):
     malformed = [e for e in entries if not e["_ref"]]
     for e in malformed:
         e.pop("_ref", None)
-        run.fail(e.get("ref", "?"), "unparseable ref")
-        e["last_error"] = "unparseable ref"
+        reason = e.pop("_fail_reason", "unparseable ref")
+        run.fail(e.get("ref", "?"), reason)
+        e["last_error"] = reason
     papers_dir = Path(lit_dir) / "papers"
     known = corpus_keys(papers_dir) if papers_dir.is_dir() else set()
     kept, duplicates = dedupe_inbox(parseable, known)
