@@ -1384,6 +1384,50 @@ def test_batch_alias_preskip():
             assert err.getvalue() == ""
 
 
+def test_merge_local_alias_ids_skip():
+    """A LOCAL-* merge target is legal (kept file planted directly), and a
+    later verb_ids for the merged-away id must skip it instead of chasing the
+    non-W alias target. Red lock: production currently raises IdentityError
+    from the alias-resolved pre-skip check."""
+    with tempfile.TemporaryDirectory() as tmp:
+        lit = pathlib.Path(tmp) / ".lit"
+        lit_fetch.ensure_corpus(lit)
+        lit_fetch.write_record(
+            lit_fetch.normalize_work(make_payload("W4444444444"), seed=True,
+                                     source="capture",
+                                     captured_at="2026-09-16T00:00:00Z"), lit)
+        local = "LOCAL-EUAIAct2024"
+        local_p = lit_fetch.paper_path(lit, local, lit_fetch.PAPER_ID_RE)
+        local_p.write_text("{}\n", encoding="utf-8")
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            assert lit_fetch.verb_merge(lit, "W4444444444", local) == 0
+        assert not (lit / "papers" / "W4444444444.json").exists()
+        assert local_p.exists()
+        assert lit_fetch.load_aliases(lit)["W4444444444"] == local
+
+        calls = []
+
+        def handler(url):
+            calls.append(url)
+            return (200, {"x-ratelimit-remaining": "9"}, envelope([]))
+
+        err = io.StringIO()
+        run = lit_fetch.Run()
+        with fake_http(handler):
+            with contextlib.redirect_stdout(io.StringIO()), \
+                    contextlib.redirect_stderr(err):
+                lit_fetch.verb_ids("W4444444444", lit, None, False, run)
+        assert run.skipped == 1
+        assert run.written == 0
+        assert run.failed == 0
+        assert run.failures == []
+        assert err.getvalue() == ""
+        assert not (lit / "papers" / "W4444444444.json").exists()
+        assert local_p.exists()
+        assert lit_fetch.load_aliases(lit)["W4444444444"] == local
+
+
 def test_batch_single_id_merge():
     """R3b: single-id chunk whose response has exactly one different canonical
     is treated as a 301 merge (alias + write under the canonical id)."""
@@ -2154,6 +2198,7 @@ CHECKS = [
     test_batch_two_chunks_and_keyless_warning,
     test_batch_skips_and_reports_absent,
     test_batch_alias_preskip,
+    test_merge_local_alias_ids_skip,
     test_batch_single_id_merge,
     test_budget_abort_keeps_completed_writes,
     test_inbox_triage_flow,
