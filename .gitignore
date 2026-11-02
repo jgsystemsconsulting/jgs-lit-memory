@@ -14,3 +14,7 @@ docs/superpowers/
 
 .superpowers/
 brainstorms/
+
+# Operator debris (keep/drop decision 2026-11-02: gitignore, files stay on disk)
+*.pdf
+/*.html
