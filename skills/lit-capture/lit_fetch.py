@@ -93,7 +93,7 @@ def normalize_work(payload, seed, source, captured_at=None):
                     for a in payload.get("authorships") or []
                     if author_display_name(a)],
         "topics": [t["display_name"] for t in payload.get("topics") or []
-                   if t.get("display_name")],
+                   if isinstance(t, dict) and t.get("display_name")],
         "oa_url": (payload.get("open_access") or {}).get("oa_url"),
         "venue": ((payload.get("primary_location") or {}).get("source") or {})
                  .get("display_name"),
