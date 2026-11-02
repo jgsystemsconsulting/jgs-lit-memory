@@ -1243,6 +1243,36 @@ def test_null_author_capture_writes_stub():
         assert brief["basis"] == "none"
 
 
+def test_null_topic_capture_writes():
+    wid = "W8800000002"
+    payload = make_payload(wid)
+    payload["topics"] = [
+        None,
+        "not-a-dict",
+        {"display_name": None},
+        {"display_name": ""},
+        {"display_name": " "},
+        {"display_name": "Graph theory"},
+    ]
+    with tempfile.TemporaryDirectory() as tmp:
+        lit = pathlib.Path(tmp) / ".lit"
+
+        def handler(url):
+            assert "/works/" + wid + "?" in url
+            return (200, {"x-ratelimit-remaining": "9999"},
+                    json.dumps(payload))
+
+        with fake_http(handler):
+            run = lit_fetch.Run()
+            with contextlib.redirect_stdout(io.StringIO()):
+                lit_fetch.capture_identifier(wid, True, lit, None, run)
+        assert run.written == 1
+        assert run.failed == 0
+        paper_path = lit / "papers" / (wid + ".json")
+        assert paper_path.exists()
+        paper = json.loads(paper_path.read_text(encoding="utf-8"))
+        assert paper["topics"] == [" ", "Graph theory"]
+
 def test_title_verb_verification_gate():
     with tempfile.TemporaryDirectory() as tmp:
         lit = pathlib.Path(tmp) / ".lit"
@@ -2188,6 +2218,7 @@ CHECKS = [
     test_run_summary,
     test_singleton_capture_and_alias,
     test_null_author_capture_writes_stub,
+    test_null_topic_capture_writes,
     test_title_verb_verification_gate,
     test_url_builders,
     test_parse_envelope,
