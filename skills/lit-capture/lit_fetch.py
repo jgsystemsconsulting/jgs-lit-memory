@@ -1064,7 +1064,7 @@ def verb_ids(raw_ids, lit_dir, api_key, seed_flag, run):
     aliases = load_aliases(lit_dir)
     todo = [w for w in ids
             if not paper_path(lit_dir, w, WID_RE).exists()
-            and not paper_path(lit_dir, resolve_alias(w, aliases), WID_RE).exists()]
+            and not paper_path(lit_dir, resolve_alias(w, aliases), PAPER_ID_RE).exists()]
     run.skipped += len(ids) - len(todo)
     if not todo:
         return
@@ -1644,7 +1644,7 @@ def validate_verb(args, verb):
     if verb == "merge":
         ids = (args.merge or "", args.into or "")
         if not all(PAPER_ID_RE.match(bare_wid(i)) for i in ids):
-            print("error: --merge W-id needs --into W-id", file=sys.stderr)
+            print("error: --merge W-id or LOCAL-id needs --into W-id or LOCAL-id", file=sys.stderr)
             sys.exit(2)
     if verb == "brief_check" and args.brief_check != "all":
         if not args.brief_check or not PAPER_ID_RE.match(bare_wid(args.brief_check)):
