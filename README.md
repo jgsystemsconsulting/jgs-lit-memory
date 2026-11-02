@@ -100,7 +100,7 @@ keeping, or when you ask to capture, save, or file a paper:
 
 ```text
 Capture this one: 10.1038/nature12373
-Save that arXiv paper, 2401.12345, "Attention Is All You Need"
+Save that arXiv paper, 1706.03762, "Attention Is All You Need"
 What do we have on citation graph bias? Check the corpus first.
 ```
 
