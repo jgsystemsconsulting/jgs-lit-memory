@@ -32,7 +32,8 @@ repo root), `--api-key <key>` (default env `OPENALEX_API_KEY`).
 - The script ships inside this skill folder. The default install is ZCode
   (`~/.zcode/skills/lit-capture/lit_fetch.py`); on other hosts substitute
   that host's installed path (for example
-  `~/.claude/skills/jgs/lit-capture/lit_fetch.py`).
+  `~/.claude/skills/jgs/lit-capture/lit_fetch.py` or
+  `~/.gemini/extensions/jgs-lit-capture/lit_fetch.py`).
 
 ## When to use
 
