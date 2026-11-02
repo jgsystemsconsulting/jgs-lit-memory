@@ -2336,6 +2336,9 @@ CHECKS = [
     test_verb_ids_hostile_response_id,
     test_http_get_host_pin,
     test_index_brief_drain_follows_writes,
+    test_paper_id_accepts_local,
+    test_audit_problems,
+    test_audit_and_merge_end_to_end,
 ]
 
 
