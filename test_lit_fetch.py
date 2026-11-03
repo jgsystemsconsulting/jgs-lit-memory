@@ -389,6 +389,41 @@ def test_validate_claim_rejects():
             pass
 
 
+def test_validate_claim_link_element_type():
+    where = "agent.claims[0]"
+    cases = (
+        ("supports", [["deep"]]),
+        ("contradicts", [{"a": 1}]),
+        ("supports", [""]),
+        ("supports", ["   "]),
+        ("supports", [1]),
+        ("supports", [None]),
+    )
+    for field, value in cases:
+        bad = claim("c1", **{field: value})
+        expected = where + ": " + field + " element must be a non-empty string"
+        try:
+            lit_fetch.validate_claim(bad, where)
+            raise AssertionError("expected BriefValidationError")
+        except lit_fetch.BriefValidationError as exc:
+            assert str(exc) == expected
+    nested = claim("c1", supports=[["deep"]])
+    try:
+        lit_fetch.validate_claim_lists(
+            agent_shell(claims=[nested]), empty_human())
+        raise AssertionError("expected BriefValidationError")
+    except lit_fetch.BriefValidationError as exc:
+        text = str(exc)
+        assert "supports element must be a non-empty string" in text
+        assert "not in the claim union" not in text
+    lit_fetch.validate_claim(claim("c1", supports=["c2"]), "agent")
+    try:
+        lit_fetch.validate_claim(claim("c1", supports="c2"), "agent")
+        raise AssertionError("expected BriefValidationError")
+    except lit_fetch.BriefValidationError as exc:
+        assert str(exc) == "agent: supports must be an array"
+
+
 def test_validate_claim_lists_union():
     a = agent_shell(claims=[claim("c1"), claim("c2", supports=["c1"])])
     h = dict(empty_human(), claims=[claim("h1", basis="human")])
@@ -2307,6 +2342,7 @@ CHECKS = [
     test_derive_status,
     test_ready_content_union_targets,
     test_validate_claim_rejects,
+    test_validate_claim_link_element_type,
     test_validate_claim_lists_union,
     test_validate_brief_stub_and_ready,
     test_ensure_brief_stub_and_no_clobber,

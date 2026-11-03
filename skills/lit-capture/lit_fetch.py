@@ -425,8 +425,14 @@ def validate_claim(claim, where):
         if field in claim and claim[field] is not None and not isinstance(claim[field], str):
             raise BriefValidationError(where + ": " + field + " must be a string or null")
     for field in ("supports", "contradicts"):
-        if field in claim and not isinstance(claim[field], list):
+        if field not in claim:
+            continue
+        if not isinstance(claim[field], list):
             raise BriefValidationError(where + ": " + field + " must be an array")
+        for t in claim[field]:
+            if not isinstance(t, str) or not t.strip():
+                raise BriefValidationError(
+                    where + ": " + field + " element must be a non-empty string")
 
 
 def validate_claim_lists(agent, human):
