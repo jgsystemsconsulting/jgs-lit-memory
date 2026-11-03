@@ -6,7 +6,7 @@
 Single-source history for jgs-lit-memory. Tags are three-component semver
 (`vMAJOR.MINOR.PATCH`).
 
-## [Unreleased]
+## [1.3.0] - 2026-11-03
 
 - `--audit` quality gate. A paper passes with a ready brief holding at least
   three claims, an open question and a related-paper link. Abstract basis
