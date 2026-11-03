@@ -200,6 +200,8 @@ If a step fails (Python missing, wrong skill count on a non-Cursor install, inst
       <tr><td><code>--brief-check [W-id]</code></td><td>Validate one brief or all (schema, id vs filename, claim graph, derived fields). Exit 1 when invalid.</td></tr>
       <tr><td><code>--brief-write --id &lt;W-id&gt; --file &lt;payload.json&gt; [--human]</code></td><td>Validate and atomically write a brief. Replaces the <code>agent</code> block, keeps <code>human</code> unless <code>--human</code>, derives <code>status</code> and <code>basis</code>.</td></tr>
       <tr><td><code>--brief-restub --id &lt;W-id&gt;</code></td><td>Reset the brief's agent shell and enrich stamps to pending. Keeps <code>human</code>.</td></tr>
+      <tr><td><code>--audit</code></td><td>Quality gate: every paper has a ready brief with 3+ claims, open questions and a related-paper link, full-text basis when an open copy exists, no duplicate titles, empty inbox. Exit 1 on any FAIL.</td></tr>
+      <tr><td><code>--merge &lt;W-old&gt; --into &lt;W-kept&gt;</code></td><td>Fold a duplicate version into the kept record: alias, repoint edges, merge briefs, delete the old record.</td></tr>
     </tbody>
   </table>
   </div>
