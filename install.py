@@ -82,11 +82,10 @@ def render_mdc(src: Path) -> str:
 
 
 def replace_dir(dest: Path) -> None:
-    if dest.exists():
-        if dest.is_symlink() or dest.is_file():
-            dest.unlink()
-        else:
-            shutil.rmtree(dest)
+    if dest.is_symlink() or dest.is_file():
+        dest.unlink()
+    elif dest.is_dir():
+        shutil.rmtree(dest)
 
 
 def install_native(
@@ -96,7 +95,7 @@ def install_native(
         print(f"  would install {src.name} -> {dest}")
         return
     dest.parent.mkdir(parents=True, exist_ok=True)
-    if dest.exists():
+    if dest.is_symlink() or dest.exists():
         if (dest / "SKILL.md").is_file() or dest.is_symlink():
             replace_dir(dest)
         else:
@@ -134,7 +133,7 @@ def install_gemini(src: Path, dest: Path, *, dry: bool) -> None:
     if dry:
         print(f"  would install extension {src.name} -> {dest}")
         return
-    if dest.exists():
+    if dest.is_symlink() or dest.exists():
         known = (
             dest.is_symlink()
             or (
